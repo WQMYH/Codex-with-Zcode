@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "zcode-ops": {
+      "command": "D:\\Program Files\\nodejs\\node.exe",
+      "args": ["./scripts/mcp-gateway.mjs"],
+      "cwd": ".",
+      "enabled": true,
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 120,
+      "default_tools_approval_mode": "prompt",
+      "tools": {
+        "zcode_list_sessions": { "approval_mode": "auto" },
+        "zcode_prompt_events": { "approval_mode": "auto" },
+        "zcode_task_poll": { "approval_mode": "auto" },
+        "zcode_desktop_sessions_status": { "approval_mode": "auto" },
+        "zcode_bridge_session_status": { "approval_mode": "auto" },
+        "zcode_runtime_status": { "approval_mode": "auto" }
+      }
+    }
+  }
+}
