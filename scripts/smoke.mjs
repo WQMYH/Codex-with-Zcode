@@ -3,6 +3,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import "./task-state.test.mjs";
+import "./remote.test.mjs";
 
 const agentEnv = JSON.parse(readFileSync("mcacp.json", "utf8")).agent_servers.zcode.env;
 const profile = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
@@ -39,6 +40,9 @@ try {
   assert(names.includes("zcode_desktop_sessions_status"));
   assert(names.includes("zcode_bridge_session_status"));
   assert(names.includes("zcode_task_poll"));
+  for (const name of ["zcode_remote_tasks", "zcode_remote_read", "zcode_remote_send"]) assert(names.includes(name));
+  const invalidRemote = await request(20, "tools/call", { name: "zcode_remote_send", arguments: { prompt: "do-not-send" } });
+  assert.match(invalidRemote.error.message, /Missing taskId/);
   assert(!names.includes("agent_install"));
   assert(!names.includes("registry_search"));
   for (const [index, name] of ["zcode_new_session", "zcode_load_session", "zcode_prompt_start"].entries()) {

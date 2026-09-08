@@ -1,2 +1,7 @@
 node_modules/
 .runtime/
+.env
+.env.*
+remote.json
+remote-url.txt
+*.log

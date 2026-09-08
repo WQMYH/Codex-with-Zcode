@@ -1,14 +1,14 @@
 {
   "name": "zcode-ops",
-  "version": "0.1.5+codex.20260906171807",
-  "description": "Inspect ZCode CLI sessions. ACP execution is suspended pending a verified desktop route.",
+  "version": "0.1.6+codex.20260908-remote",
+  "description": "Inspect and control existing ZCode desktop tasks through the official remote workspace bridge.",
   "author": {
     "name": "ZCode Ops Local"
   },
   "interface": {
     "displayName": "ZCode Ops",
-    "shortDescription": "Inspect native sessions; desktop execution pending.",
-    "longDescription": "ZCode Ops exposes native CLI session inventory and bridge event state, not verified desktop task state. ACP creation, loading and sending are suspended because the dependency hardcodes yolo and directly writes the desktop task index.",
+    "shortDescription": "Read and send to existing ZCode desktop tasks.",
+    "longDescription": "ZCode Ops reads real desktop task status and existing conversation snapshots, then sends user-authorized prompts through ZCode's remote workspace bridge. Legacy ACP creation remains suspended. The transport is intentionally narrow and can later support other desktop intelligent agents through compatible adapters.",
     "developerName": "ZCode Ops Local",
     "category": "Productivity",
     "capabilities": [
