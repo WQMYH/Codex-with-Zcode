@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encode, decode, frames, FrameReader, checksum } from "./remote-codec.mjs";
 import { RemoteClient, validateRemoteUrl } from "./remote-client.mjs";
-import { normalizeTask, callRemoteTool } from "./remote-tools.mjs";
+import { normalizeTask, callRemoteTool, waitForTask } from "./remote-tools.mjs";
 import { callConfigTool, readConfig, validateConfig, writeConfig } from "./config.mjs";
 
 const bridge = { bridgeSessionId: "test", bridgeGeneration: 1, initialTaskId: "sess_test", workspacePath: "test-workspace" };
@@ -71,6 +71,10 @@ class FakeSocket extends EventTarget {
       } else if (m.payload?.zcode_type === "rpc-frame") {
         const [header, args] = decode(new FrameReader().accept(m.payload));
         calls.push({ header, args });
+        if (header[3] === "getTaskSnapshot" && args[0].resumeModelPolicy !== "ui-resolved-only") {
+          const bytes = Buffer.concat([encode([202, header[1]]), encode("Historical model unavailable")]);
+          this.message({ type: "data", payload: frames(bytes, bridge, header[1])[0] }); return;
+        }
         if (header[3] === "setConfigOption") currentModel = args[0].value;
         const body = header[3] === "getTaskSnapshot" ? snapshot() : header[3] === "getTaskConfigOptions" ? configOptions() : { accepted: true };
         const bytes = Buffer.concat([encode([201, header[1]]), encode(body)]);
@@ -91,6 +95,9 @@ assert.equal((await client.send("sess_test", "自述进展")).result.accepted, t
 assert.equal(calls.at(-1).args[0].content, "自述进展");
 assert.equal(calls.at(-1).args[0].clientMode, "web-remote-replayable");
 assert(!("model" in calls.at(-1).args[0])); assert(!("permissionPolicy" in calls.at(-1).args[0]));
+await client.stop({ taskId: "sess_test", workspacePath: "test-workspace" });
+assert.equal(calls.at(-1).header[3], "stopGeneration");
+assert.deepEqual(calls.at(-1).args[0], { taskId: "sess_test", workspacePath: "test-workspace" });
 await assert.rejects(client.rpc("createTask", {}), /not allowed/);
 assert(!client.sanitized(Error("test-password")).message.includes("test-password"));
 const waiting = client.wait(() => false); await client.close(); await assert.rejects(waiting, /ended/);
@@ -129,4 +136,43 @@ await assert.rejects(callRemoteTool("zcode_remote_send", { taskId: "sess_archive
 await assert.rejects(callRemoteTool("zcode_remote_send", { taskId: "sess_test", prompt: "x" }, connect), /delivery is unknown/);
 assert.equal(sends, 1, "Never retry a send automatically");
 await assert.rejects(callRemoteTool("zcode_remote_tasks", { includeArchived: "false" }, connect), /Invalid/);
-console.log("ZCode remote framing, model discovery/switch, targeting, status and no-retry checks: OK");
+const read = await callRemoteTool("zcode_remote_read", { taskId: "sess_test" }, connect);
+assert.equal(read.messages[0].content, "你好");
+
+// Waiting must not hold the shared connection/lock while sleeping or infer interruption from age.
+let tick = 0, held = false, poll = 0;
+const states = ["running", "running", "waiting_permission"];
+const waitConnect = action => {
+  assert.equal(held, false); held = true;
+  return Promise.resolve(action({ list: async () => ({ tasks: [{ ...task, displayStatus: states[Math.min(poll++, states.length - 1)], updatedAt: poll }] }) }))
+    .finally(() => { held = false; });
+};
+const clock = { now: () => tick, delay: async ms => { assert.equal(held, false); tick += ms; } };
+const attention = await waitForTask({ taskId: task.taskId, timeoutMs: 10000 }, waitConnect, clock);
+assert.equal(attention.reason, "status_changed"); assert.equal(attention.task.status, "waiting_permission");
+assert.equal(poll, 3, "updatedAt alone must not wake a status wait");
+const noChange = await waitForTask({ taskId: task.taskId, timeoutMs: 3000 }, action => action({ list: async () => ({ tasks: [{ ...task, displayStatus: "running", updatedAt: 1 }] }) }), clock);
+assert.equal(noChange.timedOut, true); assert.equal(noChange.task.status, "running");
+const ended = await callRemoteTool("zcode_remote_wait", { taskId: task.taskId, afterCursor: noChange.cursor, timeoutMs: 0 }, connect);
+assert.equal(ended.changed, true); assert.equal(ended.task.turnEnded, true);
+const missing = await callRemoteTool("zcode_remote_wait", { taskId: "sess_missing", timeoutMs: 0 }, connect);
+assert.equal(missing.reason, "not_found"); assert.equal(missing.task, null);
+await assert.rejects(callRemoteTool("zcode_remote_wait", { taskId: task.taskId, timeoutMs: 30001 }, connect), /Invalid timeoutMs/);
+await assert.rejects(callRemoteTool("zcode_remote_wait", { taskId: task.taskId }, async () => { throw Error("offline"); }), /offline/);
+
+// Recheck after attaching; a completed turn must not receive a late stop. Never retry an uncertain stop.
+let stops = 0, stopLists = 0, stopStatus = "running", stopFails = false;
+const stopConnect = action => action({ list: async () => ({ tasks: [{ ...task, displayStatus: ++stopLists === 1 ? "running" : stopStatus }] }),
+  open: async () => {}, stop: async target => { assert.equal(target.taskId, task.taskId); stops++; if (stopFails) throw Error("timeout"); } });
+const stopped = await callRemoteTool("zcode_remote_cancel", { taskId: task.taskId }, stopConnect);
+assert.equal(stopped.cancellation, "cancel_requested"); assert.equal(stopped.task.turnEnded, false); assert.equal(stops, 1);
+stopLists = 0; stopStatus = "completed";
+assert.equal((await callRemoteTool("zcode_remote_cancel", { taskId: task.taskId }, stopConnect)).requested, false);
+assert.equal(stops, 1);
+assert.equal((await callRemoteTool("zcode_remote_cancel", { taskId: task.taskId }, connect)).cancellation, "not_running");
+await assert.rejects(callRemoteTool("zcode_remote_cancel", { taskId: "sess_archive" }, connect), /Unarchive/);
+await assert.rejects(callRemoteTool("zcode_remote_cancel", { taskId: task.taskId, workspace: "wrong" }, stopConnect), /not found/);
+stopLists = 0; stopStatus = "running"; stopFails = true;
+await assert.rejects(callRemoteTool("zcode_remote_cancel", { taskId: task.taskId }, stopConnect), /delivery is unknown/);
+assert.equal(stops, 2);
+console.log("ZCode remote framing, snapshot recovery, model switch, wait/cancel and no-retry checks: OK");

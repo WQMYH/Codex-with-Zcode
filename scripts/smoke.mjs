@@ -40,7 +40,7 @@ try {
   assert(names.includes("zcode_desktop_sessions_status"));
   assert(names.includes("zcode_bridge_session_status"));
   assert(names.includes("zcode_task_poll"));
-  for (const name of ["zcode_remote_tasks", "zcode_remote_read", "zcode_remote_models", "zcode_remote_set_model", "zcode_remote_send"]) assert(names.includes(name));
+  for (const name of ["zcode_remote_tasks", "zcode_remote_read", "zcode_remote_wait", "zcode_remote_cancel", "zcode_remote_models", "zcode_remote_set_model", "zcode_remote_send"]) assert(names.includes(name));
   for (const name of ["zcode_config_status", "zcode_config_set", "zcode_config_clear"]) assert(names.includes(name));
   assert(!names.includes("zcode_config_prompt"));
   const invalidRemote = await request(20, "tools/call", { name: "zcode_remote_send", arguments: { prompt: "do-not-send" } });

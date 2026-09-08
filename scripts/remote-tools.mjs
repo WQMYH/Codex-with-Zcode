@@ -1,4 +1,5 @@
 import { withRemote } from "./remote-client.mjs";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const text = { type: "string", minLength: 1 };
 const target = { taskId: text, workspace: text };
@@ -9,6 +10,10 @@ export const remoteTools = [
   ["zcode_remote_read", "Read an existing desktop task's conversation, native status, and pending user-input counts. Returned history may be partial; completed means a turn ended, not task acceptance.", {
     ...target, messageLimit: { type: "integer", minimum: 1, maximum: 500 }
   }, ["taskId"], true],
+  ["zcode_remote_wait", "Wait up to 30 seconds for one desktop task's native status to change or require attention. Returns a cursor for the next call; timeout is not interruption. No background monitor is started, and connections are released between polls so other tools can run.", {
+    ...target, afterCursor: text, timeoutMs: { type: "integer", minimum: 0, maximum: 30000 }
+  }, ["taskId"], true],
+  ["zcode_remote_cancel", "Request stopping the current running turn of the user-specified existing desktop task. Uses ZCode stopGeneration; does not kill the application. Acknowledgment is not confirmed cancellation: use zcode_remote_wait/read. Never retry an uncertain stop automatically.", target, ["taskId"], false],
   ["zcode_remote_models", "Read an existing desktop task's current model, thought level, and model options.", target, ["taskId"], true],
   ["zcode_remote_set_model", "Switch an existing idle desktop task to one of its advertised model options. Use zcode_remote_models first; never switch a running turn.", {
     ...target, model: text
@@ -71,6 +76,7 @@ async function openWorkspace(client, task, tasks) {
 
 export async function callRemoteTool(name, args = {}, connect = withRemote) {
   validateRemoteArgs(name, args);
+  if (name === "zcode_remote_wait") return waitForTask(args, connect);
   return connect(async client => {
     const list = await client.list();
     const base = { source: "zcode_desktop_remote", queriedAt: new Date().toISOString() };
@@ -85,9 +91,22 @@ export async function callRemoteTool(name, args = {}, connect = withRemote) {
     }
     const task = list.tasks.find(t => t.taskId === args.taskId && (!args.workspace || t.workspacePath === args.workspace));
     if (!task) throw Error("Task not found in the current desktop window/workspace");
-    if (["zcode_remote_send", "zcode_remote_set_model"].includes(name) && task.archived) throw Error("Unarchive the task in ZCode before changing it");
+    if (["zcode_remote_send", "zcode_remote_set_model", "zcode_remote_cancel"].includes(name) && task.archived) throw Error("Unarchive the task in ZCode before changing it");
+    if (name === "zcode_remote_cancel" && task.displayStatus !== "running") return { ...base, task: normalizeTask(task), cancellation: "not_running", requested: false };
     if (name === "zcode_remote_set_model" && task.displayStatus === "running") throw Error("Wait for or stop the running turn before switching its model");
     await openWorkspace(client, task, list.tasks);
+    if (name === "zcode_remote_cancel") {
+      const fresh = (await client.list()).tasks.find(candidate => candidate.taskId === task.taskId && candidate.workspacePath === task.workspacePath);
+      if (!fresh || fresh.archived || fresh.displayStatus !== "running") return { ...base, task: fresh ? normalizeTask(fresh) : null, cancellation: "not_running", requested: false };
+      try {
+        const result = await client.stop(fresh);
+        if (result?.isError || result?.error || result?.accepted === false) throw Error("Desktop rejected stop");
+        return { ...base, task: normalizeTask(fresh), cancellation: "cancel_requested", requested: true,
+          note: "Stop acknowledged; task termination is not yet confirmed. Use zcode_remote_wait/read." };
+      } catch {
+        throw Error("Stop was not confirmed; delivery is unknown. Read the task before retrying. No automatic retry was made.");
+      }
+    }
     if (name === "zcode_remote_models" || name === "zcode_remote_set_model") {
       let before, optionsSourceTaskId = task.taskId, unavailableCurrentModel = false, failure;
       try { before = modelState(await client.configOptions(task.taskId)); }
@@ -143,4 +162,29 @@ export async function callRemoteTool(name, args = {}, connect = withRemote) {
       throw Error("Send was not confirmed; delivery is unknown. Read this task before retrying. No automatic retry was made.");
     }
   });
+}
+
+// ponytail: bounded list polling; use native event subscription if polling cost becomes material.
+export async function waitForTask(args, connect, { now = Date.now, delay = sleep } = {}) {
+  const started = now(), deadline = started + (args.timeoutMs ?? 30000);
+  let baseline = args.afterCursor;
+  for (;;) {
+    const task = await connect(async client => {
+      const list = await client.list();
+      const row = list.tasks.find(t => t.taskId === args.taskId && (!args.workspace || t.workspacePath === args.workspace));
+      return row ? normalizeTask(row) : null;
+    });
+    // Status cursor deliberately excludes updatedAt: streamed tokens should not wake a status wait.
+    const cursor = JSON.stringify([args.taskId, task?.workspace ?? args.workspace ?? null, task?.rawStatus ?? null, task?.archived ?? null]);
+    const changed = baseline !== undefined && cursor !== baseline;
+    baseline ??= cursor;
+    const settled = task && !["running", "compacting"].includes(task.status);
+    const elapsedMs = now() - started;
+    if (!task || changed || settled || now() >= deadline) return {
+      source: "zcode_desktop_remote", queriedAt: new Date().toISOString(), task, cursor, changed, elapsedMs,
+      reason: !task ? "not_found" : changed ? "status_changed" : task.status === "unknown" ? "status_unknown" : settled ? "not_running" : "timeout",
+      timedOut: !!task && !changed && !settled && now() >= deadline
+    };
+    await delay(Math.min(2000, deadline - now()));
+  }
 }

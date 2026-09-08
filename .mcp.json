@@ -14,6 +14,8 @@
         "zcode_config_clear": { "approval_mode": "prompt" },
         "zcode_remote_tasks": { "approval_mode": "auto" },
         "zcode_remote_read": { "approval_mode": "auto" },
+        "zcode_remote_wait": { "approval_mode": "auto" },
+        "zcode_remote_cancel": { "approval_mode": "prompt" },
         "zcode_remote_models": { "approval_mode": "auto" },
         "zcode_remote_set_model": { "approval_mode": "prompt" },
         "zcode_remote_send": { "approval_mode": "prompt" },

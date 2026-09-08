@@ -88,7 +88,7 @@ export class RemoteClient {
   }
   async rpc(method, args) {
     if (!this.bridge) throw Error("No desktop task attached");
-    if (!["getTaskSnapshot", "getTaskConfigOptions", "resumeTask", "sendPrompt", "setConfigOption"].includes(method)) throw Error("Remote method not allowed");
+    if (!["getTaskSnapshot", "getTaskConfigOptions", "resumeTask", "sendPrompt", "setConfigOption", "stopGeneration"].includes(method)) throw Error("Remote method not allowed");
     const id = ++this.serial;
     const response = await this.wait(m => m?.kind === "rpc" && m.header[1] === id && m.header[0] !== 200, () => {
       const bytes = Buffer.concat([encode([100, id, "zcode-task", method]), encode([args])]);
@@ -98,7 +98,11 @@ export class RemoteClient {
     return response.body;
   }
   snapshot(taskId, limit = 100) {
-    return this.rpc("getTaskSnapshot", { taskId, workspacePath: this.bridge.workspacePath, clientMode: "web-remote-replayable", messageLimit: limit, byteBudget: 1024 * 1024, toolLimit: 0 });
+    return this.rpc("getTaskSnapshot", { taskId, workspacePath: this.bridge.workspacePath, clientMode: "web-remote-replayable", resumeModelPolicy: "ui-resolved-only", messageLimit: limit, byteBudget: 1024 * 1024, toolLimit: 0 });
+  }
+  stop(task) {
+    return this.rpc("stopGeneration", { taskId: task.taskId, workspacePath: task.workspacePath,
+      ...(task.workspaceIdentity ? { workspaceIdentity: task.workspaceIdentity } : {}) });
   }
   configOptions(taskId) { return this.rpc("getTaskConfigOptions", { taskId }); }
   send(taskId, content) {
