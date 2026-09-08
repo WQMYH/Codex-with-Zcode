@@ -88,7 +88,7 @@ export class RemoteClient {
   }
   async rpc(method, args) {
     if (!this.bridge) throw Error("No desktop task attached");
-    if (!["getTaskSnapshot", "sendPrompt", "setConfigOption"].includes(method)) throw Error("Remote method not allowed");
+    if (!["getTaskSnapshot", "getTaskConfigOptions", "resumeTask", "sendPrompt", "setConfigOption"].includes(method)) throw Error("Remote method not allowed");
     const id = ++this.serial;
     const response = await this.wait(m => m?.kind === "rpc" && m.header[1] === id && m.header[0] !== 200, () => {
       const bytes = Buffer.concat([encode([100, id, "zcode-task", method]), encode([args])]);
@@ -100,6 +100,7 @@ export class RemoteClient {
   snapshot(taskId, limit = 100) {
     return this.rpc("getTaskSnapshot", { taskId, workspacePath: this.bridge.workspacePath, clientMode: "web-remote-replayable", messageLimit: limit, byteBudget: 1024 * 1024, toolLimit: 0 });
   }
+  configOptions(taskId) { return this.rpc("getTaskConfigOptions", { taskId }); }
   send(taskId, content) {
     const ids = { traceId: randomUUID(), queryId: randomUUID(), messageId: randomUUID() };
     return this.rpc("sendPrompt", { taskId, content, ...ids, attachments: [], clientMode: "web-remote-replayable", clientId: "zcode-ops", clientLabel: "Codex ZCode Ops" })
@@ -107,6 +108,10 @@ export class RemoteClient {
   }
   setModel(taskId, configId, value) {
     return this.rpc("setConfigOption", { taskId, traceId: randomUUID(), configId, value });
+  }
+  resume(task, model, thoughtLevel) {
+    return this.rpc("resumeTask", { taskId: task.taskId, workspacePath: task.workspacePath,
+      ...(task.workspaceIdentity ? { workspaceIdentity: task.workspaceIdentity } : {}), model, thoughtLevel });
   }
   async close() {
     this.fail(Error("Remote operation ended"));

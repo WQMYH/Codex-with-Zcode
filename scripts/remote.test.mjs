@@ -51,8 +51,10 @@ const modelOptions = [
   { value: "builtin:bigmodel-coding-plan/GLM-5.3-Flash", name: "GLM-5.3-Flash" },
   { value: "custom/deepseek-v4-flash-vision-exp", name: "deepseek-v4-flash-vision-exp" }
 ];
+const configOptions = () => [{ id: "model", category: "model", currentValue: currentModel, options: modelOptions },
+  { id: "thoughtLevel", category: "thought_level", currentValue: "max", options: [] }];
 const snapshot = () => ({ messages: [{ id: "answer", role: "assistant", content: "你好" }], runtime: {}, history: { totalMessages: 1 },
-  meta: { model: currentModel, thoughtLevel: "max" }, configOptions: [{ id: "model", category: "model", currentValue: currentModel, options: modelOptions }] });
+  meta: { model: currentModel, thoughtLevel: "max" }, configOptions: configOptions() });
 class FakeSocket extends EventTarget {
   readyState = 0;
   constructor() { super(); queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event("open")); }); }
@@ -70,7 +72,7 @@ class FakeSocket extends EventTarget {
         const [header, args] = decode(new FrameReader().accept(m.payload));
         calls.push({ header, args });
         if (header[3] === "setConfigOption") currentModel = args[0].value;
-        const body = header[3] === "getTaskSnapshot" ? snapshot() : { accepted: true };
+        const body = header[3] === "getTaskSnapshot" ? snapshot() : header[3] === "getTaskConfigOptions" ? configOptions() : { accepted: true };
         const bytes = Buffer.concat([encode([201, header[1]]), encode(body)]);
         this.message({ type: "data", payload: frames(bytes, bridge, header[1])[0] });
       }
@@ -99,15 +101,23 @@ const task = { taskId: "sess_test", workspaceKind: "local", workspacePath: "test
 let sends = 0;
 currentModel = modelOptions[0].value;
 const connect = action => action({ list: async () => ({ workspaces: [], tasks: [task, { ...task, taskId: "sess_archive", archived: true }] }),
-  open: async () => {}, snapshot: async () => snapshot(), setModel: async (_taskId, _configId, value) => { currentModel = value; },
+  open: async () => {}, snapshot: async () => snapshot(), configOptions: async () => configOptions(), setModel: async (_taskId, _configId, value) => { currentModel = value; },
   send: async () => { sends++; throw Error("timeout"); } });
 const list = await callRemoteTool("zcode_remote_tasks", {}, connect);
 assert.equal(list.total, 1); assert.equal(list.summary.completed, 1);
 const models = await callRemoteTool("zcode_remote_models", { taskId: "sess_test" }, connect);
 assert.equal(models.currentModel, modelOptions[0].value); assert.equal(models.models.length, 2);
+let invalidCurrentModel = true;
+const unavailableConnect = action => action({ list: async () => ({ workspaces: [], tasks: [task, { ...task, taskId: "sess_anchor" }] }),
+  open: async () => {}, configOptions: async taskId => { if (taskId === task.taskId && invalidCurrentModel) throw Error("model unavailable"); return configOptions(); },
+  setModel: async () => { throw Error("Session is not active: sess_test"); },
+  resume: async (_task, value) => { currentModel = value; invalidCurrentModel = false; } });
+const recovered = await callRemoteTool("zcode_remote_set_model", { taskId: "sess_test", model: "deepseek-v4-flash-vision-exp" }, unavailableConnect);
+assert.equal(recovered.recoveredUnavailableModel, true); assert.equal(recovered.optionsSourceTaskId, "sess_anchor");
+currentModel = modelOptions[0].value;
 const opened = [];
 const fallbackConnect = action => action({ list: async () => ({ workspaces: [], tasks: [task, { ...task, taskId: "sess_anchor" }] }),
-  open: async candidate => { opened.push(candidate.taskId); if (candidate.taskId === task.taskId) throw Error("superseded"); }, snapshot: async () => snapshot() });
+  open: async candidate => { opened.push(candidate.taskId); if (candidate.taskId === task.taskId) throw Error("superseded"); }, configOptions: async () => configOptions() });
 await callRemoteTool("zcode_remote_models", { taskId: "sess_test" }, fallbackConnect);
 assert.deepEqual(opened, ["sess_test", "sess_anchor"]);
 const switched = await callRemoteTool("zcode_remote_set_model", { taskId: "sess_test", model: "deepseek-v4-flash-vision-exp" }, connect);

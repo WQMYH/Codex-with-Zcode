@@ -46,12 +46,14 @@ export function validateRemoteArgs(name, args) {
   if (args.taskId && !/^sess_[a-zA-Z0-9-]+$/.test(args.taskId)) throw Error("Expected a native sess_ task ID");
 }
 
-function modelState(snapshot) {
-  const config = snapshot?.configOptions?.find(option => option.id === "model" || option.category === "model");
+function modelState(configOptions) {
+  const options = Array.isArray(configOptions) ? configOptions : configOptions?.configOptions;
+  const config = options?.find(option => option.id === "model" || option.category === "model");
   if (!config || !Array.isArray(config.options)) throw Error("ZCode did not return model options for this task");
+  const thought = options.find(option => option.id === "thoughtLevel" || option.category === "thought_level");
   return {
-    currentModel: config.currentValue ?? snapshot.meta?.model ?? null,
-    thoughtLevel: snapshot.meta?.thoughtLevel ?? null,
+    currentModel: config.currentValue ?? null,
+    thoughtLevel: thought?.currentValue ?? null,
     configId: config.id,
     models: config.options.map(option => ({ value: option.value, name: option.name,
       providerName: option.modelProviderName ?? null, thoughtLevels: option.modelThoughtLevels ?? [],
@@ -87,16 +89,32 @@ export async function callRemoteTool(name, args = {}, connect = withRemote) {
     if (name === "zcode_remote_set_model" && task.displayStatus === "running") throw Error("Wait for or stop the running turn before switching its model");
     await openWorkspace(client, task, list.tasks);
     if (name === "zcode_remote_models" || name === "zcode_remote_set_model") {
-      const before = modelState(await client.snapshot(task.taskId, 1));
-      if (name === "zcode_remote_models") return { ...base, task: normalizeTask(task), ...before };
+      let before, optionsSourceTaskId = task.taskId, unavailableCurrentModel = false, failure;
+      try { before = modelState(await client.configOptions(task.taskId)); }
+      catch (error) {
+        failure = error;
+        for (const sibling of list.tasks.filter(candidate => candidate.taskId !== task.taskId && candidate.workspacePath === task.workspacePath && !candidate.archived)) {
+          try {
+            before = { ...modelState(await client.configOptions(sibling.taskId)), currentModel: null, thoughtLevel: null };
+            optionsSourceTaskId = sibling.taskId; unavailableCurrentModel = true; break;
+          } catch {}
+        }
+      }
+      if (!before) throw failure;
+      if (name === "zcode_remote_models") return { ...base, task: normalizeTask(task), ...before, optionsSourceTaskId, unavailableCurrentModel };
       const matches = before.models.filter(model => model.value === args.model || model.name === args.model);
       if (matches.length !== 1) throw Error(matches.length ? "Model name is ambiguous; use its full value" : "Model is not advertised for this task");
       const selected = matches[0];
       if (before.currentModel === selected.value) return { ...base, task: normalizeTask(task), changed: false, currentModel: selected.value };
-      await client.setModel(task.taskId, before.configId, selected.value);
-      const after = modelState(await client.snapshot(task.taskId, 1));
+      try { await client.setModel(task.taskId, before.configId, selected.value); }
+      catch (error) {
+        if (!/Session is not active/i.test(String(error?.message))) throw error;
+        await client.resume(task, selected.value, selected.defaultThoughtLevel ?? selected.thoughtLevels.at(-1) ?? "max");
+      }
+      const after = modelState(await client.configOptions(task.taskId));
       if (after.currentModel !== selected.value) throw Error("ZCode did not confirm the requested model switch");
-      return { ...base, task: normalizeTask(task), changed: true, previousModel: before.currentModel, currentModel: after.currentModel };
+      return { ...base, task: normalizeTask(task), changed: true, previousModel: before.currentModel, currentModel: after.currentModel,
+        optionsSourceTaskId, recoveredUnavailableModel: unavailableCurrentModel };
     }
     if (name === "zcode_remote_read") {
       const snapshot = await client.snapshot(task.taskId, args.messageLimit ?? 100);
