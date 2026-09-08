@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { decodeEvents, observeEvents, taskSnapshot } from "./task-state.mjs";
 import { remoteTools, callRemoteTool } from "./remote-tools.mjs";
+import { configTools, callConfigTool, startStartupPrompt } from "./config.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const version = JSON.parse(readFileSync(resolve(root, ".codex-plugin", "plugin.json"), "utf8")).version;
@@ -36,6 +37,8 @@ const TOOLS = [
 }));
 const names = new Set(TOOLS.map(({ name }) => name));
 for (const tool of remoteTools) { TOOLS.push(tool); names.add(tool.name); }
+for (const tool of configTools) { TOOLS.push(tool); names.add(tool.name); }
+startStartupPrompt();
 let inner;
 let serial = 0;
 const pending = new Map();
@@ -218,6 +221,7 @@ async function handle(message) {
   if (suspendedTools.has(params.name)) return failure(id, -32001, "ZCode ACP execution is suspended: upstream creates yolo sessions and writes the desktop index directly. Use the desktop's own task flow; no session was created, loaded, or prompted by this call.");
   if (!names.has(params.name)) return failure(id, -32601, `Tool not allowed: ${String(params.name)}`);
   try {
+    if (configTools.some(tool => tool.name === params.name)) return output({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(await callConfigTool(params.name, params.arguments), null, 2) }] } });
     if (remoteTools.some(tool => tool.name === params.name)) return output({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(await callRemoteTool(params.name, params.arguments), null, 2) }] } });
     if (params.name === "zcode_desktop_sessions_status") return output({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(await readDesktopSessions(params.arguments), null, 2) }] } });
     if (params.name === "zcode_bridge_session_status") return output({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(await bridgeSessionStatus(params.arguments), null, 2) }] } });

@@ -17,7 +17,9 @@ if (process.platform === "win32") assert.equal(profile.home, process.env.USERPRO
 assert(readFileSync("scripts/mcp-gateway.mjs", "utf8").includes("env: { ...process.env, ...zcodeEnv }"), "Inventory must reuse the configured agent environment");
 console.log("zcode-ops desktop profile routing: OK");
 
-const child = spawn(process.execPath, ["scripts/mcp-gateway.mjs"], { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] });
+const child = spawn(process.execPath, ["scripts/mcp-gateway.mjs"], {
+  cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ZCODE_OPS_NO_CONFIG_PROMPT: "1" }
+});
 const version = JSON.parse(readFileSync(".codex-plugin/plugin.json", "utf8")).version;
 const replies = new Map();
 createInterface({ input: child.stdout }).on("line", (line) => {
@@ -41,6 +43,7 @@ try {
   assert(names.includes("zcode_bridge_session_status"));
   assert(names.includes("zcode_task_poll"));
   for (const name of ["zcode_remote_tasks", "zcode_remote_read", "zcode_remote_send"]) assert(names.includes(name));
+  for (const name of ["zcode_config_status", "zcode_config_prompt", "zcode_config_set", "zcode_config_clear"]) assert(names.includes(name));
   const invalidRemote = await request(20, "tools/call", { name: "zcode_remote_send", arguments: { prompt: "do-not-send" } });
   assert.match(invalidRemote.error.message, /Missing taskId/);
   assert(!names.includes("agent_install"));

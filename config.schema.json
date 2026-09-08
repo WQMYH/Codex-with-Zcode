@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/WQMYH/Codex-with-Zcode/main/config.schema.json",
+  "title": "ZCode Ops configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "promptOnStartup", "sharingLink"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "promptOnStartup": { "type": "boolean" },
+    "sharingLink": {
+      "type": ["string", "null"],
+      "pattern": "^https://zcode\\.z\\.ai/remote/v4\\?"
+    },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  }
+}

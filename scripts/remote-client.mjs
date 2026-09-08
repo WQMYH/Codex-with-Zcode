@@ -1,34 +1,13 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { readFileSync, statSync, openSync, closeSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
-import { homedir } from "node:os";
+import { openSync, closeSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { encode, decode, frames, FrameReader } from "./remote-codec.mjs";
+import { configPath, readSharingLink, validateSharingLink, waitForStartupPrompt } from "./config.mjs";
 
-export function remoteConfigPath() {
-  return join(process.env.CODEX_HOME || join(homedir(), ".codex"), "zcode-ops", "remote.json");
-}
 export function readRemoteUrl() {
-  let file = process.env.ZCODE_REMOTE_URL_FILE;
-  if (!file) {
-    try { file = JSON.parse(readFileSync(remoteConfigPath(), "utf8")).urlFile; }
-    catch { throw Error("Configure ZCODE_REMOTE_URL_FILE or zcode-ops/remote.json in Codex home"); }
-  }
-  if (typeof file !== "string" || !isAbsolute(file)) throw Error("Remote URL file must be an absolute path");
-  let content;
-  try {
-    if (statSync(file).size > 16384) throw Error();
-    content = readFileSync(file, "utf8");
-  } catch { throw Error("Cannot read bounded remote URL file"); }
-  const matches = content.match(/https:\/\/[^\s<>"\u0000]+/g);
-  if (matches?.length !== 1) throw Error("Remote URL file must contain exactly one HTTPS URL");
-  return validateRemoteUrl(matches[0]);
+  return readSharingLink();
 }
-export function validateRemoteUrl(value) {
-  let u; try { u = new URL(value); } catch { throw Error("Invalid remote URL"); }
-  if (u.origin !== "https://zcode.z.ai" || u.pathname !== "/remote/v4" || u.username || u.password ||
-      !["sid", "hash", "mid"].every(k => u.searchParams.getAll(k).length === 1 && u.searchParams.get(k))) throw Error("Expected an official ZCode /remote/v4 authorization link");
-  return u;
-}
+export const validateRemoteUrl = validateSharingLink;
 
 export class RemoteClient {
   constructor(url, { WebSocketClass = WebSocket, timeoutMs = 15000 } = {}) {
@@ -140,8 +119,10 @@ export class RemoteClient {
 let queue = Promise.resolve();
 export function withRemote(action) {
   const run = queue.then(async () => {
+    const prompt = await waitForStartupPrompt();
+    if (prompt && !prompt.saved && !prompt.disabled && !prompt.skipped) throw Error("Current ZCode sharing link was not saved; use zcode_config_prompt");
     const url = readRemoteUrl();
-    const lock = join(dirname(remoteConfigPath()), "remote.lock");
+    const lock = join(dirname(configPath()), "remote.lock");
     mkdirSync(dirname(lock), { recursive: true });
     let fd;
     try { fd = openSync(lock, "wx", 0o600); }

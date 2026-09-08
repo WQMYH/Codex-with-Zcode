@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { encode, decode, frames, FrameReader, checksum } from "./remote-codec.mjs";
 import { RemoteClient, validateRemoteUrl } from "./remote-client.mjs";
 import { normalizeTask, callRemoteTool } from "./remote-tools.mjs";
+import { callConfigTool, readConfig, validateConfig, writeConfig } from "./config.mjs";
 
 const bridge = { bridgeSessionId: "test", bridgeGeneration: 1, initialTaskId: "sess_test", workspacePath: "test-workspace" };
 assert.equal(checksum(Buffer.from("123456789")), "cbf43926");
@@ -20,6 +24,26 @@ assert.throws(() => validateRemoteUrl("https://zcode.z.ai/remote/v4?sid=x&sid=y&
 assert.equal(normalizeTask({ displayStatus: "error" }).status, "failed");
 assert.equal(normalizeTask({ displayStatus: "__proto__" }).status, "unknown");
 assert.equal(normalizeTask({ updatedAt: 1 }).status, "unknown", "Stale time must never infer interruption");
+
+const configDir = mkdtempSync(join(tmpdir(), "zcode-ops-"));
+const previousConfig = process.env.ZCODE_OPS_CONFIG;
+process.env.ZCODE_OPS_CONFIG = join(configDir, "config.json");
+try {
+  assert.throws(() => validateConfig({ schemaVersion: 1, promptOnStartup: true, sharingLink: null, extra: true }));
+  writeConfig({ sharingLink: null, promptOnStartup: true });
+  assert.equal(readConfig().sharingLink, null);
+  const invalidPath = join(configDir, "invalid.json");
+  process.env.ZCODE_OPS_CONFIG = invalidPath; writeFileSync(invalidPath, "not json");
+  assert.equal((await callConfigTool("zcode_config_status")).valid, false);
+  process.env.ZCODE_OPS_CONFIG = join(configDir, "config.json");
+  const set = await callConfigTool("zcode_config_set", { sharingLink: "https://zcode.z.ai/remote/v4?sid=test&hash=secret&mid=device", promptOnStartup: false });
+  assert.equal(set.configured, true); assert(!JSON.stringify(set).includes("secret"));
+  const status = await callConfigTool("zcode_config_status"); assert.equal(status.valid, true); assert(!JSON.stringify(status).includes("secret"));
+  await callConfigTool("zcode_config_clear"); assert.equal(readConfig().sharingLink, null);
+} finally {
+  if (previousConfig === undefined) delete process.env.ZCODE_OPS_CONFIG; else process.env.ZCODE_OPS_CONFIG = previousConfig;
+  rmSync(configDir, { recursive: true, force: true });
+}
 
 const calls = [];
 class FakeSocket extends EventTarget {
