@@ -85,6 +85,35 @@ class FakeSocket extends EventTarget {
   close() { this.readyState = 3; this.dispatchEvent(new Event("close")); }
 }
 const url = "https://zcode.z.ai/remote/v4?sid=test-session&hash=test-password&mid=test-device";
+// Desktop-sized incoming fragments must pass the full receive/decode path.
+// Synthetic data reproduces the observed 2,395,800-byte / four-fragment snapshot.
+const largeBody = "x".repeat(2395788);
+const largeBytes = Buffer.concat([encode([201, 99]), encode(largeBody)]);
+assert.equal(largeBytes.length, 2395800);
+const desktopChunkSize = 786177;
+const desktopParts = Array.from({ length: Math.ceil(largeBytes.length / desktopChunkSize) }, (_, i) => ({
+  ...frames(encode("metadata"), bridge, 99)[0], fragmentIndex: i,
+  fragmentCount: Math.ceil(largeBytes.length / desktopChunkSize), messageBytes: largeBytes.length,
+  checksum: { algorithm: "crc32", value: checksum(largeBytes) },
+  dataBase64: largeBytes.subarray(i * desktopChunkSize, (i + 1) * desktopChunkSize).toString("base64")
+}));
+const receiver = new RemoteClient(url);
+receiver.bridge = bridge;
+const acknowledgments = [];
+receiver.payload = value => acknowledgments.push(value);
+let received;
+receiver.deliver = value => { received = value; };
+for (const part of [...desktopParts].reverse()) {
+  const raw = JSON.stringify({ type: "data", payload: part });
+  assert(raw.length < 1024 * 1024);
+  await receiver.receive(raw);
+}
+assert.equal(received.body, largeBody);
+assert.equal(acknowledgments.length, 1);
+assert.equal(receiver.reader.pending.size, 0);
+assert.throws(() => new FrameReader().accept({ ...desktopParts[0], dataBase64: "A".repeat(1024 * 1024 + 4) }), /Invalid remote frame/);
+assert.throws(() => new FrameReader().accept({ ...desktopParts[0], messageBytes: 16 * 1024 * 1024 + 1 }), /Invalid remote frame/);
+await assert.rejects(receiver.receive(" ".repeat(1024 * 1024 + 1)), /physical frame exceeds limit/);
 const client = new RemoteClient(url, { WebSocketClass: FakeSocket, timeoutMs: 200 });
 await client.connect(); assert.equal((await client.list()).tasks[0].taskId, "sess_test");
 await client.open({ taskId: "sess_test", workspacePath: "test-workspace", workspaceKind: "local" });

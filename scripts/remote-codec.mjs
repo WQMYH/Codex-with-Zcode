@@ -3,6 +3,10 @@
 import { crc32 } from "node:zlib";
 
 export const MAX_MESSAGE = 16 * 1024 * 1024;
+// Incoming fragments may fill a 1 MiB physical envelope after base64 encoding.
+// Outgoing 512 KiB fragments are a conservative sender choice, not a receive limit.
+const MAX_FRAGMENT_BASE64 = 1024 * 1024;
+const MAX_FRAGMENT_BYTES = MAX_FRAGMENT_BASE64 / 4 * 3;
 export const checksum = bytes => crc32(bytes).toString(16).padStart(8, "0");
 
 export function encode(value) {
@@ -74,7 +78,7 @@ export class FrameReader {
         !Number.isInteger(p.fragmentIndex) || p.fragmentIndex < 0 || p.fragmentIndex >= p.fragmentCount ||
         !Number.isInteger(p.messageBytes) || p.messageBytes < 1 || p.messageBytes > MAX_MESSAGE ||
         p.checksum?.algorithm !== "crc32" || !/^[0-9a-f]{8}$/.test(p.checksum.value) ||
-        typeof p.dataBase64 !== "string" || p.dataBase64.length > 700000) throw Error("Invalid remote frame");
+        typeof p.dataBase64 !== "string" || p.dataBase64.length > MAX_FRAGMENT_BASE64) throw Error("Invalid remote frame");
     let a = this.pending.get(p.messageSeq);
     if (!a) {
       // ponytail: one short-lived RPC connection; bound in-flight assemblies instead of a background reaper.
@@ -84,7 +88,7 @@ export class FrameReader {
     }
     if (a.count !== p.fragmentCount || a.size !== p.messageBytes || a.crc !== p.checksum.value) throw Error("Conflicting remote fragments");
     const chunk = Buffer.from(p.dataBase64, "base64");
-    if (chunk.length > 512 * 1024 || chunk.toString("base64") !== p.dataBase64) throw Error("Invalid remote fragment encoding");
+    if (chunk.length > MAX_FRAGMENT_BYTES || chunk.toString("base64") !== p.dataBase64) throw Error("Invalid remote fragment encoding");
     if (a.chunks.has(p.fragmentIndex)) {
       if (!a.chunks.get(p.fragmentIndex).equals(chunk)) throw Error("Conflicting duplicate fragment");
     } else { a.chunks.set(p.fragmentIndex, chunk); a.bytes += chunk.length; }

@@ -17,4 +17,34 @@ Verified against the installed ZCode desktop bundle and a live Remote Control se
 - Sharing links are stored without format probing. URL parsing and required authentication fields are checked only when a remote operation is attempted. A connection failure asks for a new link; no automatic send retry occurs.
 - Codex startup performs no ZCode operation and shows no link prompt. OpenAI's optional plugin components currently run through the ChatGPT MCP Apps UI path, so this local Codex plugin uses the native conversation input instead of a separate imitation window: <https://developers.openai.com/plugins/build/chatgpt-ui>.
 
+## Large snapshot repair (2026-09-09)
+
+`Invalid remote frame` on long conversations was a receiver-limit bug, not evidence
+of an expired Sharing Link. A live response declared 2,395,800 bytes in four
+fragments; its first base64 fragment was 1,048,236 characters (786,177 decoded
+bytes). The receiver incorrectly treated our outgoing 512 KiB fragment size as
+the peer's receive limit. Reading two messages succeeded with the same link.
+
+The receiver now accepts base64 fragments up to 1 MiB (768 KiB decoded), while
+the physical JSON envelope still must fit 1 MiB. The 16 MiB assembled-message
+cap, fragment-count/in-flight limits, canonical base64, size and CRC32 checks
+remain enforced. Outgoing fragmentation stays at 512 KiB. Synthetic regression
+coverage reproduces the observed four-fragment shape through receive/decode,
+including reversed arrival order, acknowledgment and oversize rejection.
+
+Live default-limit reads subsequently recovered 100 messages from task 1 and
+21 messages from task 3. Task 1's text output was capped at 24,000 characters;
+successful transport does not imply complete history or review acceptance.
+
+Operational lessons: match exact task IDs (titles `1` and `01` are distinct);
+inspect all monitored tasks each pass; serialize only short remote calls, never
+wait for one task's completion before checking others. Native `completed` means
+a turn ended, not that the overall task or review passed. Check messages and
+authoritative evidence before advancing. Never retry an uncertain send/stop;
+inspect delivery first. Diagnose transport fields before requesting a new link,
+and never record link secrets or conversation bodies in diagnostics.
+
+The previous eight-task review monitor was retired at the user's request. Its
+two-round review gate is no longer a prerequisite for the Bio-Harness handoff.
+
 The desktop bundle is implementation evidence, not a stable public contract. Re-run the live snapshot and switch verification after ZCode upgrades.
