@@ -1,6 +1,6 @@
 {
   "name": "zcode-ops",
-  "version": "0.1.6+codex.20260908051746",
+  "version": "0.1.6+codex.20260908052449",
   "description": "Inspect, select models for, and control existing ZCode desktop tasks through the official remote workspace bridge.",
   "author": {
     "name": "ZCode Ops Local"
