@@ -30,13 +30,13 @@ const previousConfig = process.env.ZCODE_OPS_CONFIG;
 process.env.ZCODE_OPS_CONFIG = join(configDir, "config.json");
 try {
   assert.throws(() => validateConfig({ schemaVersion: 1, promptOnStartup: true, sharingLink: null, extra: true }));
-  writeConfig({ sharingLink: null, promptOnStartup: true });
+  writeConfig({ sharingLink: null });
   assert.equal(readConfig().sharingLink, null);
   const invalidPath = join(configDir, "invalid.json");
   process.env.ZCODE_OPS_CONFIG = invalidPath; writeFileSync(invalidPath, "not json");
   assert.equal((await callConfigTool("zcode_config_status")).valid, false);
   process.env.ZCODE_OPS_CONFIG = join(configDir, "config.json");
-  const set = await callConfigTool("zcode_config_set", { sharingLink: "https://zcode.z.ai/remote/v4?sid=test&hash=secret&mid=device", promptOnStartup: false });
+  const set = await callConfigTool("zcode_config_set", { sharingLink: "not-prevalidated-secret" });
   assert.equal(set.configured, true); assert(!JSON.stringify(set).includes("secret"));
   const status = await callConfigTool("zcode_config_status"); assert.equal(status.valid, true); assert(!JSON.stringify(status).includes("secret"));
   await callConfigTool("zcode_config_clear"); assert.equal(readConfig().sharingLink, null);
@@ -46,6 +46,13 @@ try {
 }
 
 const calls = [];
+let currentModel = "builtin:bigmodel-coding-plan/GLM-5.3-Flash";
+const modelOptions = [
+  { value: "builtin:bigmodel-coding-plan/GLM-5.3-Flash", name: "GLM-5.3-Flash" },
+  { value: "custom/deepseek-v4-flash-vision-exp", name: "deepseek-v4-flash-vision-exp" }
+];
+const snapshot = () => ({ messages: [{ id: "answer", role: "assistant", content: "你好" }], runtime: {}, history: { totalMessages: 1 },
+  meta: { model: currentModel, thoughtLevel: "max" }, configOptions: [{ id: "model", category: "model", currentValue: currentModel, options: modelOptions }] });
 class FakeSocket extends EventTarget {
   readyState = 0;
   constructor() { super(); queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event("open")); }); }
@@ -62,7 +69,8 @@ class FakeSocket extends EventTarget {
       } else if (m.payload?.zcode_type === "rpc-frame") {
         const [header, args] = decode(new FrameReader().accept(m.payload));
         calls.push({ header, args });
-        const body = header[3] === "getTaskSnapshot" ? { messages: [{ id: "answer", role: "assistant", content: "你好" }], runtime: {}, history: { totalMessages: 1 } } : { accepted: true };
+        if (header[3] === "setConfigOption") currentModel = args[0].value;
+        const body = header[3] === "getTaskSnapshot" ? snapshot() : { accepted: true };
         const bytes = Buffer.concat([encode([201, header[1]]), encode(body)]);
         this.message({ type: "data", payload: frames(bytes, bridge, header[1])[0] });
       }
@@ -75,6 +83,8 @@ const client = new RemoteClient(url, { WebSocketClass: FakeSocket, timeoutMs: 20
 await client.connect(); assert.equal((await client.list()).tasks[0].taskId, "sess_test");
 await client.open({ taskId: "sess_test", workspacePath: "test-workspace", workspaceKind: "local" });
 assert.equal((await client.snapshot("sess_test")).messages[0].content, "你好");
+await client.setModel("sess_test", "model", "custom/deepseek-v4-flash-vision-exp");
+assert.equal((await client.snapshot("sess_test")).meta.model, "custom/deepseek-v4-flash-vision-exp");
 assert.equal((await client.send("sess_test", "自述进展")).result.accepted, true);
 assert.equal(calls.at(-1).args[0].content, "自述进展");
 assert.equal(calls.at(-1).args[0].clientMode, "web-remote-replayable");
@@ -87,12 +97,26 @@ await assert.rejects(offline.wait(() => false), /timed out/);
 
 const task = { taskId: "sess_test", workspaceKind: "local", workspacePath: "test-workspace", displayStatus: "completed" };
 let sends = 0;
-const connect = action => action({ list: async () => ({ workspaces: [], tasks: [task, { ...task, taskId: "sess_archive", archived: true }] }), open: async () => {}, send: async () => { sends++; throw Error("timeout"); } });
+currentModel = modelOptions[0].value;
+const connect = action => action({ list: async () => ({ workspaces: [], tasks: [task, { ...task, taskId: "sess_archive", archived: true }] }),
+  open: async () => {}, snapshot: async () => snapshot(), setModel: async (_taskId, _configId, value) => { currentModel = value; },
+  send: async () => { sends++; throw Error("timeout"); } });
 const list = await callRemoteTool("zcode_remote_tasks", {}, connect);
 assert.equal(list.total, 1); assert.equal(list.summary.completed, 1);
+const models = await callRemoteTool("zcode_remote_models", { taskId: "sess_test" }, connect);
+assert.equal(models.currentModel, modelOptions[0].value); assert.equal(models.models.length, 2);
+const opened = [];
+const fallbackConnect = action => action({ list: async () => ({ workspaces: [], tasks: [task, { ...task, taskId: "sess_anchor" }] }),
+  open: async candidate => { opened.push(candidate.taskId); if (candidate.taskId === task.taskId) throw Error("superseded"); }, snapshot: async () => snapshot() });
+await callRemoteTool("zcode_remote_models", { taskId: "sess_test" }, fallbackConnect);
+assert.deepEqual(opened, ["sess_test", "sess_anchor"]);
+const switched = await callRemoteTool("zcode_remote_set_model", { taskId: "sess_test", model: "deepseek-v4-flash-vision-exp" }, connect);
+assert.equal(switched.currentModel, modelOptions[1].value); assert.equal(switched.changed, true);
+const runningConnect = action => action({ list: async () => ({ workspaces: [], tasks: [{ ...task, displayStatus: "running" }] }), open: async () => { throw Error("must not open"); } });
+await assert.rejects(callRemoteTool("zcode_remote_set_model", { taskId: "sess_test", model: "deepseek-v4-flash-vision-exp" }, runningConnect), /running turn/);
 await assert.rejects(callRemoteTool("zcode_remote_send", { taskId: "sess_test", workspace: "wrong", prompt: "x" }, connect), /not found/);
 await assert.rejects(callRemoteTool("zcode_remote_send", { taskId: "sess_archive", prompt: "x" }, connect), /Unarchive/);
 await assert.rejects(callRemoteTool("zcode_remote_send", { taskId: "sess_test", prompt: "x" }, connect), /delivery is unknown/);
 assert.equal(sends, 1, "Never retry a send automatically");
 await assert.rejects(callRemoteTool("zcode_remote_tasks", { includeArchived: "false" }, connect), /Invalid/);
-console.log("ZCode remote framing, transport, targeting, status and no-retry checks: OK");
+console.log("ZCode remote framing, model discovery/switch, targeting, status and no-retry checks: OK");

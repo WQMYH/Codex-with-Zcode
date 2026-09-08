@@ -1,14 +1,14 @@
 {
   "name": "zcode-ops",
-  "version": "0.1.6+codex.20260908025045",
-  "description": "Inspect and control existing ZCode desktop tasks through the official remote workspace bridge.",
+  "version": "0.1.6+codex.20260908034246",
+  "description": "Inspect, select models for, and control existing ZCode desktop tasks through the official remote workspace bridge.",
   "author": {
     "name": "ZCode Ops Local"
   },
   "interface": {
     "displayName": "ZCode Ops",
     "shortDescription": "Read and send to existing ZCode desktop tasks.",
-    "longDescription": "ZCode Ops reads real desktop task status and existing conversation snapshots, then sends user-authorized prompts through ZCode's remote workspace bridge. Legacy ACP creation remains suspended. The transport is intentionally narrow and can later support other desktop intelligent agents through compatible adapters.",
+    "longDescription": "ZCode Ops reads real desktop task status, conversation snapshots, and model options, switches idle tasks to an advertised model, then sends user-authorized prompts through ZCode's remote workspace bridge. Legacy ACP creation remains suspended. The transport is intentionally narrow and can later support other desktop intelligent agents through compatible adapters.",
     "developerName": "ZCode Ops Local",
     "category": "Productivity",
     "capabilities": [
@@ -18,7 +18,7 @@
     "defaultPrompt": [
       "\u5217\u51fa ZCode \u684c\u9762\u4efb\u52a1\u72b6\u6001",
       "\u8bfb\u53d6\u6307\u5b9a ZCode \u5bf9\u8bdd",
-      "\u6253\u5f00 ZCode Sharing Link \u914d\u7f6e\u7a97\u53e3"
+      "\u8bfb\u53d6\u6307\u5b9a ZCode \u5bf9\u8bdd\u7684\u6a21\u578b\u6e05\u5355"
     ]
   },
   "mcpServers": "./.mcp.json"

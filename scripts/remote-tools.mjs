@@ -9,6 +9,10 @@ export const remoteTools = [
   ["zcode_remote_read", "Read an existing desktop task's conversation, native status, and pending user-input counts. Returned history may be partial; completed means a turn ended, not task acceptance.", {
     ...target, messageLimit: { type: "integer", minimum: 1, maximum: 500 }
   }, ["taskId"], true],
+  ["zcode_remote_models", "Read an existing desktop task's current model, thought level, and model options.", target, ["taskId"], true],
+  ["zcode_remote_set_model", "Switch an existing idle desktop task to one of its advertised model options. Use zcode_remote_models first; never switch a running turn.", {
+    ...target, model: text
+  }, ["taskId", "model"], false],
   ["zcode_remote_send", "Send a user-authorized message to an existing local desktop task using its current runtime and settings. Does not create tasks or change models/permissions. A failed or timed-out send may have been delivered: read the task before retrying.", {
     ...target, prompt: { type: "string", minLength: 1, maxLength: 32000 }
   }, ["taskId", "prompt"], false]
@@ -41,6 +45,28 @@ export function validateRemoteArgs(name, args) {
   }
   if (args.taskId && !/^sess_[a-zA-Z0-9-]+$/.test(args.taskId)) throw Error("Expected a native sess_ task ID");
 }
+
+function modelState(snapshot) {
+  const config = snapshot?.configOptions?.find(option => option.id === "model" || option.category === "model");
+  if (!config || !Array.isArray(config.options)) throw Error("ZCode did not return model options for this task");
+  return {
+    currentModel: config.currentValue ?? snapshot.meta?.model ?? null,
+    thoughtLevel: snapshot.meta?.thoughtLevel ?? null,
+    configId: config.id,
+    models: config.options.map(option => ({ value: option.value, name: option.name,
+      providerName: option.modelProviderName ?? null, thoughtLevels: option.modelThoughtLevels ?? [],
+      defaultThoughtLevel: option.modelDefaultThoughtLevel ?? null }))
+  };
+}
+
+async function openWorkspace(client, task, tasks) {
+  let failure;
+  for (const anchor of [task, ...tasks.filter(candidate => candidate.taskId !== task.taskId && candidate.workspacePath === task.workspacePath && candidate.workspaceKind === task.workspaceKind && !candidate.archived)]) {
+    try { await client.open(anchor); return; } catch (error) { failure = error; }
+  }
+  throw failure ?? Error("No task can attach this workspace bridge");
+}
+
 export async function callRemoteTool(name, args = {}, connect = withRemote) {
   validateRemoteArgs(name, args);
   return connect(async client => {
@@ -57,8 +83,21 @@ export async function callRemoteTool(name, args = {}, connect = withRemote) {
     }
     const task = list.tasks.find(t => t.taskId === args.taskId && (!args.workspace || t.workspacePath === args.workspace));
     if (!task) throw Error("Task not found in the current desktop window/workspace");
-    if (name === "zcode_remote_send" && task.archived) throw Error("Unarchive the task in ZCode before sending");
-    await client.open(task);
+    if (["zcode_remote_send", "zcode_remote_set_model"].includes(name) && task.archived) throw Error("Unarchive the task in ZCode before changing it");
+    if (name === "zcode_remote_set_model" && task.displayStatus === "running") throw Error("Wait for or stop the running turn before switching its model");
+    await openWorkspace(client, task, list.tasks);
+    if (name === "zcode_remote_models" || name === "zcode_remote_set_model") {
+      const before = modelState(await client.snapshot(task.taskId, 1));
+      if (name === "zcode_remote_models") return { ...base, task: normalizeTask(task), ...before };
+      const matches = before.models.filter(model => model.value === args.model || model.name === args.model);
+      if (matches.length !== 1) throw Error(matches.length ? "Model name is ambiguous; use its full value" : "Model is not advertised for this task");
+      const selected = matches[0];
+      if (before.currentModel === selected.value) return { ...base, task: normalizeTask(task), changed: false, currentModel: selected.value };
+      await client.setModel(task.taskId, before.configId, selected.value);
+      const after = modelState(await client.snapshot(task.taskId, 1));
+      if (after.currentModel !== selected.value) throw Error("ZCode did not confirm the requested model switch");
+      return { ...base, task: normalizeTask(task), changed: true, previousModel: before.currentModel, currentModel: after.currentModel };
+    }
     if (name === "zcode_remote_read") {
       const snapshot = await client.snapshot(task.taskId, args.messageLimit ?? 100);
       if (!Array.isArray(snapshot?.messages)) throw Error("Unsupported ZCode conversation schema");

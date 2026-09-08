@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { decodeEvents, observeEvents, taskSnapshot } from "./task-state.mjs";
 import { remoteTools, callRemoteTool } from "./remote-tools.mjs";
-import { configTools, callConfigTool, startStartupPrompt } from "./config.mjs";
+import { configTools, callConfigTool } from "./config.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const version = JSON.parse(readFileSync(resolve(root, ".codex-plugin", "plugin.json"), "utf8")).version;
@@ -38,7 +38,6 @@ const TOOLS = [
 const names = new Set(TOOLS.map(({ name }) => name));
 for (const tool of remoteTools) { TOOLS.push(tool); names.add(tool.name); }
 for (const tool of configTools) { TOOLS.push(tool); names.add(tool.name); }
-startStartupPrompt();
 let inner;
 let serial = 0;
 const pending = new Map();

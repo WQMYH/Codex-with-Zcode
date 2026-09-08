@@ -1,10 +1,7 @@
-import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, join } from "node:path";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const schema = "https://raw.githubusercontent.com/WQMYH/Codex-with-Zcode/main/config.schema.json";
 
 export function configPath() {
@@ -15,10 +12,10 @@ export function configPath() {
 
 export function validateSharingLink(value) {
   let url;
-  try { url = new URL(value); } catch { throw Error("Invalid ZCode sharing link"); }
+  try { url = new URL(value); } catch { throw Error("Cannot use the saved ZCode Sharing Link; ask the user for the current link and call zcode_config_set"); }
   if (url.origin !== "https://zcode.z.ai" || url.pathname !== "/remote/v4" || url.username || url.password ||
       !["sid", "hash", "mid"].every(key => url.searchParams.getAll(key).length === 1 && url.searchParams.get(key))) {
-    throw Error("Expected the current official ZCode /remote/v4 sharing link");
+    throw Error("Cannot use the saved ZCode Sharing Link; ask the user for the current link and call zcode_config_set");
   }
   return url;
 }
@@ -26,9 +23,9 @@ export function validateSharingLink(value) {
 export function validateConfig(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
       Object.keys(value).some(key => !["$schema", "schemaVersion", "promptOnStartup", "sharingLink", "updatedAt"].includes(key)) ||
-      value.schemaVersion !== 1 || typeof value.promptOnStartup !== "boolean" ||
+      value.schemaVersion !== 1 || (value.promptOnStartup !== undefined && typeof value.promptOnStartup !== "boolean") ||
       !(value.sharingLink === null || typeof value.sharingLink === "string")) throw Error("Invalid ZCode Ops config schema");
-  if (value.sharingLink !== null) validateSharingLink(value.sharingLink);
+  if (typeof value.sharingLink === "string" && (!value.sharingLink.trim() || value.sharingLink.length > 4096)) throw Error("Invalid ZCode Ops config schema");
   if (value.updatedAt !== undefined && (typeof value.updatedAt !== "string" || Number.isNaN(Date.parse(value.updatedAt)))) throw Error("Invalid config updatedAt");
   return value;
 }
@@ -44,10 +41,9 @@ export function readConfig({ optional = false, path = configPath() } = {}) {
   }
 }
 
-export function writeConfig({ sharingLink = null, promptOnStartup = true }, path = configPath()) {
-  if (sharingLink !== null) validateSharingLink(sharingLink);
-  if (typeof promptOnStartup !== "boolean") throw Error("promptOnStartup must be boolean");
-  const config = { $schema: schema, schemaVersion: 1, promptOnStartup, sharingLink, updatedAt: new Date().toISOString() };
+export function writeConfig({ sharingLink = null }, path = configPath()) {
+  if (!(sharingLink === null || typeof sharingLink === "string") || (typeof sharingLink === "string" && (!sharingLink.trim() || sharingLink.length > 4096))) throw Error("sharingLink must be a non-empty bounded string or null");
+  const config = { $schema: schema, schemaVersion: 1, promptOnStartup: false, sharingLink, updatedAt: new Date().toISOString() };
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
   try {
@@ -59,46 +55,14 @@ export function writeConfig({ sharingLink = null, promptOnStartup = true }, path
 
 export function readSharingLink() {
   const config = readConfig();
-  if (!config.sharingLink) throw Error("ZCode sharing link is not configured; use zcode_config_prompt");
-  return validateSharingLink(config.sharingLink);
+  if (!config.sharingLink) throw Error("ZCode is not configured; ask the user for the current Sharing Link and call zcode_config_set");
+  return config.sharingLink;
 }
-
-let dialog;
-export function promptForSharingLink() {
-  if (process.env.ZCODE_OPS_NO_CONFIG_PROMPT === "1") return Promise.resolve({ saved: false, skipped: true });
-  if (dialog) return dialog;
-  dialog = new Promise(resolveDialog => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", resolve(root, "scripts", "sharing-link-dialog.ps1")],
-      { windowsHide: false, stdio: ["ignore", "pipe", "ignore"] });
-    let output = "";
-    child.stdout.on("data", chunk => { if (output.length < 16384) output += chunk; });
-    child.on("error", () => resolveDialog({ saved: false, error: "dialog_unavailable" }));
-    child.on("exit", code => {
-      if (code !== 0 || !output.trim()) return resolveDialog({ saved: false, cancelled: true });
-      try {
-        const current = readConfig({ optional: true });
-        writeConfig({ sharingLink: validateSharingLink(output.trim()).href, promptOnStartup: current?.promptOnStartup ?? true });
-        resolveDialog({ saved: true });
-      } catch { resolveDialog({ saved: false, error: "invalid_link" }); }
-    });
-  }).finally(() => { dialog = null; });
-  return dialog;
-}
-
-let startupPrompt = Promise.resolve();
-export function startStartupPrompt() {
-  let enabled = true;
-  try { enabled = readConfig({ optional: true })?.promptOnStartup !== false; } catch {}
-  startupPrompt = enabled ? promptForSharingLink() : Promise.resolve({ saved: false, disabled: true });
-  return startupPrompt;
-}
-export function waitForStartupPrompt() { return startupPrompt; }
 
 export const configTools = [
   { name: "zcode_config_status", description: "Read installed ZCode Ops configuration status without returning the sharing link.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-  { name: "zcode_config_prompt", description: "Open the local sharing-link input window and save the current ZCode link outside the plugin installation.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } },
-  { name: "zcode_config_set", description: "Update installed ZCode Ops configuration. Prefer zcode_config_prompt when entering a sharing link so it does not appear in chat.", inputSchema: { type: "object", properties: { sharingLink: { type: "string", minLength: 1, maxLength: 4096 }, promptOnStartup: { type: "boolean" } }, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-  { name: "zcode_config_clear", description: "Clear the saved sharing link while preserving the startup prompt preference.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } }
+  { name: "zcode_config_set", description: "Save a user-provided ZCode Sharing Link without pre-validating it. Connection errors mean the user should provide a fresh link.", inputSchema: { type: "object", properties: { sharingLink: { type: "string", minLength: 1, maxLength: 4096 } }, required: ["sharingLink"], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  { name: "zcode_config_clear", description: "Clear the saved sharing link.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } }
 ];
 
 export async function callConfigTool(name, args = {}) {
@@ -108,20 +72,16 @@ export async function callConfigTool(name, args = {}) {
     try { value = readConfig({ optional: true }); }
     catch (error) { return { configPath: configPath(), configured: false, valid: false, error: error.message }; }
     return { configPath: configPath(), configured: Boolean(value?.sharingLink), valid: value !== null,
-      schemaVersion: value?.schemaVersion ?? null, promptOnStartup: value?.promptOnStartup ?? true, updatedAt: value?.updatedAt ?? null };
+      schemaVersion: value?.schemaVersion ?? null, updatedAt: value?.updatedAt ?? null };
   }
-  if (name === "zcode_config_prompt") return promptForSharingLink();
-  const current = readConfig({ optional: true });
   if (name === "zcode_config_clear") {
-    const next = writeConfig({ sharingLink: null, promptOnStartup: current?.promptOnStartup ?? true });
-    return { saved: true, configured: false, configPath: configPath(), promptOnStartup: next.promptOnStartup, updatedAt: next.updatedAt };
+    const next = writeConfig({ sharingLink: null });
+    return { saved: true, configured: false, configPath: configPath(), updatedAt: next.updatedAt };
   }
   if (name === "zcode_config_set") {
-    if (Object.keys(args).some(key => !["sharingLink", "promptOnStartup"].includes(key)) ||
-        (args.sharingLink === undefined && args.promptOnStartup === undefined)) throw Error("Set sharingLink and/or promptOnStartup");
-    const next = writeConfig({ sharingLink: args.sharingLink ?? current?.sharingLink ?? null,
-      promptOnStartup: args.promptOnStartup ?? current?.promptOnStartup ?? true });
-    return { saved: true, configured: Boolean(next.sharingLink), configPath: configPath(), promptOnStartup: next.promptOnStartup, updatedAt: next.updatedAt };
+    if (Object.keys(args).some(key => key !== "sharingLink") || typeof args.sharingLink !== "string") throw Error("Set sharingLink");
+    const next = writeConfig({ sharingLink: args.sharingLink });
+    return { saved: true, configured: true, configPath: configPath(), updatedAt: next.updatedAt };
   }
   throw Error("Unknown config tool");
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/WQMYH/Codex-with-Zcode/main/config.schema.json",
   "schemaVersion": 1,
-  "promptOnStartup": true,
+  "promptOnStartup": false,
   "sharingLink": "https://zcode.z.ai/remote/v4?sid=REDACTED&hash=REDACTED&mid=REDACTED",
   "updatedAt": "2026-01-01T00:00:00.000Z"
 }

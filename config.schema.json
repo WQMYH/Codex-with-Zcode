@@ -4,14 +4,15 @@
   "title": "ZCode Ops configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "promptOnStartup", "sharingLink"],
+  "required": ["schemaVersion", "sharingLink"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": 1 },
-    "promptOnStartup": { "type": "boolean" },
+    "promptOnStartup": { "const": false, "deprecated": true },
     "sharingLink": {
       "type": ["string", "null"],
-      "pattern": "^https://zcode\\.z\\.ai/remote/v4\\?"
+      "minLength": 1,
+      "maxLength": 4096
     },
     "updatedAt": { "type": "string", "format": "date-time" }
   }

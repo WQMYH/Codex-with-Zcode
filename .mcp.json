@@ -10,11 +10,12 @@
       "default_tools_approval_mode": "prompt",
       "tools": {
         "zcode_config_status": { "approval_mode": "auto" },
-        "zcode_config_prompt": { "approval_mode": "prompt" },
         "zcode_config_set": { "approval_mode": "prompt" },
         "zcode_config_clear": { "approval_mode": "prompt" },
         "zcode_remote_tasks": { "approval_mode": "auto" },
         "zcode_remote_read": { "approval_mode": "auto" },
+        "zcode_remote_models": { "approval_mode": "auto" },
+        "zcode_remote_set_model": { "approval_mode": "prompt" },
         "zcode_remote_send": { "approval_mode": "prompt" },
         "zcode_list_sessions": { "approval_mode": "auto" },
         "zcode_prompt_events": { "approval_mode": "auto" },

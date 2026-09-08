@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { openSync, closeSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { encode, decode, frames, FrameReader } from "./remote-codec.mjs";
-import { configPath, readSharingLink, validateSharingLink, waitForStartupPrompt } from "./config.mjs";
+import { configPath, readSharingLink, validateSharingLink } from "./config.mjs";
 
 export function readRemoteUrl() {
   return readSharingLink();
@@ -88,7 +88,7 @@ export class RemoteClient {
   }
   async rpc(method, args) {
     if (!this.bridge) throw Error("No desktop task attached");
-    if (!["getTaskSnapshot", "sendPrompt"].includes(method)) throw Error("Remote method not allowed");
+    if (!["getTaskSnapshot", "sendPrompt", "setConfigOption"].includes(method)) throw Error("Remote method not allowed");
     const id = ++this.serial;
     const response = await this.wait(m => m?.kind === "rpc" && m.header[1] === id && m.header[0] !== 200, () => {
       const bytes = Buffer.concat([encode([100, id, "zcode-task", method]), encode([args])]);
@@ -105,6 +105,9 @@ export class RemoteClient {
     return this.rpc("sendPrompt", { taskId, content, ...ids, attachments: [], clientMode: "web-remote-replayable", clientId: "zcode-ops", clientLabel: "Codex ZCode Ops" })
       .then(result => ({ request: ids, result }));
   }
+  setModel(taskId, configId, value) {
+    return this.rpc("setConfigOption", { taskId, traceId: randomUUID(), configId, value });
+  }
   async close() {
     this.fail(Error("Remote operation ended"));
     if (!this.ws || this.ws.readyState === 3) return;
@@ -119,18 +122,20 @@ export class RemoteClient {
 let queue = Promise.resolve();
 export function withRemote(action) {
   const run = queue.then(async () => {
-    const prompt = await waitForStartupPrompt();
-    if (prompt && !prompt.saved && !prompt.disabled && !prompt.skipped) throw Error("Current ZCode sharing link was not saved; use zcode_config_prompt");
     const url = readRemoteUrl();
     const lock = join(dirname(configPath()), "remote.lock");
     mkdirSync(dirname(lock), { recursive: true });
     let fd;
     try { fd = openSync(lock, "wx", 0o600); }
     catch { throw Error("ZCode remote connection is busy; if no client is running, remove zcode-ops/remote.lock in Codex home"); }
-    const client = new RemoteClient(url);
-    try { writeFileSync(fd, String(process.pid)); await client.connect(); return await action(client); }
-    catch (e) { throw client.sanitized(e); }
-    finally { await client.close(); closeSync(fd); unlinkSync(lock); }
+    let client;
+    try {
+      try { client = new RemoteClient(url); await client.connect(); }
+      catch { throw Error("Cannot connect to ZCode; ask the user for the current Sharing Link, call zcode_config_set, then retry once"); }
+      writeFileSync(fd, String(process.pid));
+      return await action(client);
+    } catch (e) { throw client ? client.sanitized(e) : e; }
+    finally { if (client) await client.close(); closeSync(fd); unlinkSync(lock); }
   });
   queue = run.catch(() => {});
   return run;
