@@ -38,6 +38,23 @@ export const remoteTools = [
   annotations: { readOnlyHint, destructiveHint: false, idempotentHint: readOnlyHint, openWorldHint: true }
 }));
 
+function nativeExecutionFailure(error) {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return { stage: "native_execution", source: "zcode_native", reason: "unknown" };
+  const attribution = error.attribution && typeof error.attribution === "object" && !Array.isArray(error.attribution) ? error.attribution : {};
+  const scalar = value => typeof value === "string" && value.length <= 128 ? value : Number.isSafeInteger(value) ? String(value) : null;
+  const code = scalar(error.code ?? attribution.providerErrorCode);
+  const rawStatusCode = error.statusCode ?? attribution.statusCode;
+  const statusCode = Number.isInteger(rawStatusCode) && rawStatusCode >= 100 && rawStatusCode <= 599 ? rawStatusCode : null;
+  const reason = scalar(error.reason ?? attribution.reason);
+  const rateLimited = reason === "rate_limited" || statusCode === 429 || code === "1308";
+  const retryable = typeof (error.retryable ?? attribution.retryable) === "boolean" ? error.retryable ?? attribution.retryable : null;
+  const providerId = scalar(error.providerId ?? attribution.providerId), modelId = scalar(error.modelId ?? attribution.modelId);
+  return { stage: "native_execution", source: rateLimited ? "provider" : scalar(attribution.source) ?? "zcode_native",
+    reason: rateLimited ? "rate_limited" : reason ?? "unknown", ...(code ? { code } : {}),
+    ...(statusCode ? { statusCode } : {}), ...(retryable !== null ? { retryable } : {}),
+    ...(providerId ? { providerId } : {}), ...(modelId ? { modelId } : {}) };
+}
+
 export function normalizeTask(t) {
   const rawStatus = t.displayStatus ?? null;
   const statuses = { running: "running", completed: "completed", error: "failed", idle: "idle",
@@ -46,7 +63,8 @@ export function normalizeTask(t) {
   const status = Object.hasOwn(statuses, rawStatus) ? statuses[rawStatus] : "unknown";
   return { taskId: t.taskId, title: t.title, workspace: t.workspacePath, workspaceKind: t.workspaceKind,
     rawStatus, status, archived: t.archived === true, pinned: t.pinned === true, updatedAt: t.updatedAt,
-    turnEnded: ["completed", "failed", "cancelled", "interrupted"].includes(status) };
+    turnEnded: ["completed", "failed", "cancelled", "interrupted"].includes(status),
+    ...(status === "failed" ? { nativeExecutionFailure: nativeExecutionFailure(t.lastError ?? t.error) } : {}) };
 }
 export function validateRemoteArgs(name, args) {
   const tool = remoteTools.find(t => t.name === name);

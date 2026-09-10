@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MessageQueue, marker, validateQueueArgs } from "./message-queue.mjs";
 import { tick, dispatch } from "./queue-worker.mjs";
-import { readMany } from "./remote-tools.mjs";
+import { normalizeTask, readMany } from "./remote-tools.mjs";
 import { messagePage } from "./remote-messages.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "zcode-queue-test-"));
@@ -96,6 +96,28 @@ try {
   assert.deepEqual(await recoveryCase({ freshStatus: "running" }), { sends: 0, state: "queued" });
   for (const key of ["pendingPermissions", "pendingElicitations", "pendingCommands"]) {
     assert.deepEqual(await recoveryCase({ runtime: { [key]: [{}] } }), { sends: 0, state: "queued" });
+  }
+  // An ACK plus the native user message proves handoff. A failed model turn is
+  // classified separately, preserving provider detail only when ZCode exposes it.
+  for (const [suffix, lastError, expected] of [["rate", { code: "1308", attribution: { source: "provider", reason: "rate_limited",
+    statusCode: 429, retryable: false, providerId: "builtin:bigmodel-coding-plan", modelId: "GLM-5.3-Flash" } },
+    { stage: "native_execution", source: "provider", reason: "rate_limited", code: "1308", statusCode: 429,
+      retryable: false, providerId: "builtin:bigmodel-coding-plan", modelId: "GLM-5.3-Flash",
+      userMessageObserved: true, assistantTextReturned: false }],
+  ["unknown", undefined, { stage: "native_execution", source: "zcode_native", reason: "unknown",
+    userMessageObserved: true, assistantTextReturned: false }]]) {
+    const taskId = `sess_failure-${suffix}`, messageId = queue.enqueue({ requestId: `failure-${suffix}`, taskIds: [taskId], prompt: "work" }).messages[0].messageId;
+    queue.state(queue.get(messageId), "acknowledged");
+    const task = normalizeTask({ taskId, workspacePath: "workspace", displayStatus: "error", ...(lastError ? { lastError } : {}) });
+    queue.observe(queue.get(messageId), { task, cursor: `cursor-${suffix}`, historyGap: false, messages: [
+      { id: `user-${suffix}`, role: "user", turnIndex: 1, content: marker(messageId) + "\nwork", contentOffset: 0 },
+      { id: `assistant-${suffix}`, role: "assistant", turnIndex: 1, content: "", contentOffset: 0 }
+    ] });
+    const view = queue.read({ taskId, limit: 20 });
+    assert.equal(queue.get(messageId).state, "needs_attention");
+    assert.deepEqual(view.events.find(event => event.kind === "native_execution_failed").payload, expected);
+    assert.deepEqual(view.envelopes[0].nativeExecutionFailure, expected);
+    if (suffix === "unknown") assert.equal(queue.resolve({ messageId, decision: "release" }).state, "released");
   }
   queue.db.prepare("UPDATE worker SET desired=0").run();
   await tick(queue, token, connect); assert.equal(sent.length, 3);

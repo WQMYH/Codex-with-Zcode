@@ -147,11 +147,13 @@ export class MessageQueue {
     });
   }
   envelope(row) {
+    const failure = this.db.prepare("SELECT payload FROM events WHERE message_id=? AND kind='native_execution_failed' ORDER BY seq DESC LIMIT 1").get(row.id);
     return { schemaVersion: 1, messageId: row.id, requestId: row.request_id, teamId: row.team_id,
       source: { agent: JSON.parse(row.context).sourceAgent ?? "unspecified", declaredBySender: true },
       destination: { agent: "zcode", taskId: row.task_id }, createdAt: row.created_at,
       prompt: row.pruned_at ? null : row.prompt, context: row.pruned_at ? null : JSON.parse(row.context),
       state: row.state, nativeStatus: row.native_status, nativeMessageId: row.native_id, turnIndex: row.turn_index,
+      ...(failure ? { nativeExecutionFailure: JSON.parse(failure.payload) } : {}),
       consumedAt: row.consumed_at, bodyPruned: !!row.pruned_at,
       lastEvent: this.db.prepare("SELECT coalesce(max(seq),0) AS n FROM events WHERE message_id=?").get(row.id).n };
   }
@@ -280,6 +282,10 @@ export class MessageQueue {
       if (row.native_status !== page.task.status) this.event(row, "native_status", { status: page.task.status });
       this.db.prepare("UPDATE messages SET cursor=?,native_id=?,turn_index=?,reply_seen=?,native_status=? WHERE id=?")
         .run(page.cursor, nativeId, turn, reply, page.task.status, row.id);
+      if (nativeId && page.task.status === "failed") this.event(row, "native_execution_failed", {
+        ...(page.task.nativeExecutionFailure ?? { stage: "native_execution", source: "zcode_native", reason: "unknown" }),
+        userMessageObserved: true, assistantTextReturned: !!reply
+      });
       if (competing || page.task.archived || ["failed", "cancelled", "interrupted"].includes(page.task.status)) this.state(row, "needs_attention");
       else if (page.completionConfirmed === true && !page.hasMore && nativeId && reply && page.task.status === "completed" &&
         !page.pendingPermissions && !page.pendingQuestions && !page.pendingCommands) this.state(row, "completed");
