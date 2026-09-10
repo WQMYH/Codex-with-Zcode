@@ -1,6 +1,6 @@
 {
   "name": "zcode-ops",
-  "version": "0.1.6+codex.20260908172136",
+  "version": "0.1.6+codex.20260909173448",
   "description": "Inspect, select models for, and control existing ZCode desktop tasks through the official remote workspace bridge.",
   "author": {
     "name": "ZCode Ops Local"
@@ -8,7 +8,7 @@
   "interface": {
     "displayName": "ZCode Ops",
     "shortDescription": "Read and send to existing ZCode desktop tasks.",
-    "longDescription": "ZCode Ops reads real desktop task status, conversation snapshots, and model options, switches idle tasks to an advertised model, then sends user-authorized prompts through ZCode's remote workspace bridge. Legacy ACP creation remains suspended. The transport is intentionally narrow and can later support other desktop intelligent agents through compatible adapters.",
+    "longDescription": "Eight tools inspect existing ZCode desktop tasks, read conversations or a durable inbox, send authorized prompts through one on-demand queue, control delivery, select advertised models, and manage the Sharing Link. Single and batch sends share the same path; explicit pause persists. Legacy ACP diagnostics are not exposed by default. Future support for other desktop agents will follow verified interfaces.",
     "developerName": "ZCode Ops Local",
     "category": "Productivity",
     "capabilities": [

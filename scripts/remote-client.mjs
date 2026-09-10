@@ -1,8 +1,10 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { openSync, closeSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { MessageQueue, queuePath, alive } from "./message-queue.mjs";
 import { encode, decode, frames, FrameReader } from "./remote-codec.mjs";
-import { configPath, readSharingLink, validateSharingLink } from "./config.mjs";
+import { readSharingLink, validateSharingLink } from "./config.mjs";
 
 export function readRemoteUrl() {
   return readSharingLink();
@@ -128,24 +130,30 @@ export class RemoteClient {
   }
 }
 
-let queue = Promise.resolve();
-export function withRemote(action) {
-  const run = queue.then(async () => {
-    const url = readRemoteUrl();
-    const lock = join(dirname(configPath()), "remote.lock");
-    mkdirSync(dirname(lock), { recursive: true });
-    let fd;
-    try { fd = openSync(lock, "wx", 0o600); }
-    catch { throw Error("ZCode remote connection is busy; if no client is running, remove zcode-ops/remote.lock in Codex home"); }
-    let client;
+export async function withRemote(action, { path = queuePath(), waitMs = 30000, createClient = url => new RemoteClient(url) } = {}) {
+  const queue = new MessageQueue(path);
+  let ticket, client;
+  try {
+    // ponytail: one physical connection, FIFO admission in the existing SQLite DB; no new daemon.
+    ticket = queue.remoteTicket();
+    const deadline = performance.now() + waitMs;
+    while (!queue.remoteTurn(ticket)) {
+      if (performance.now() >= deadline) throw Error("ZCode remote wait timed out; no remote action started");
+      await delay(Math.min(100, Math.max(1, deadline - performance.now())));
+    }
+    // Upgrade guard only. New clients never create a filesystem lock or an ownerless window.
+    const lock = join(dirname(path), "remote.lock");
     try {
-      try { client = new RemoteClient(url); await client.connect(); }
-      catch { throw Error("Cannot connect to ZCode; ask the user for the current Sharing Link, call zcode_config_set, then retry once"); }
-      writeFileSync(fd, String(process.pid));
-      return await action(client);
-    } catch (e) { throw client ? client.sanitized(e) : e; }
-    finally { if (client) await client.close(); closeSync(fd); unlinkSync(lock); }
-  });
-  queue = run.catch(() => {});
-  return run;
+      const owner = readFileSync(lock, "utf8").trim();
+      if (!/^\d+$/.test(owner) || !Number.isSafeInteger(Number(owner)) || Number(owner) < 1 || alive(Number(owner))) throw Error("Legacy remote.lock has a live or unknown owner; close the old plugin and verify ownership before cleanup");
+      unlinkSync(lock);
+    } catch (e) { if (e.code !== "ENOENT") throw e; }
+    try { client = createClient(readRemoteUrl()); await client.connect(); }
+    catch { throw Error("Cannot connect to ZCode; ask the user for the current Sharing Link, call zcode_config_set, then retry once"); }
+    return await action(client);
+  } catch (e) { throw client ? client.sanitized(e) : e; }
+  finally {
+    try { if (client) await client.close(); }
+    finally { try { if (ticket) queue.remoteDone(ticket); } finally { queue.close(); } }
+  }
 }

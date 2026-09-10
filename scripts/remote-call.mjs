@@ -2,11 +2,10 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { remoteTools } from "./remote-tools.mjs";
-import { configTools } from "./config.mjs";
+import { publicTools } from "./tools.mjs";
 
 const [name, json = "{}"] = process.argv.slice(2);
-if (![...remoteTools, ...configTools].some(t => t.name === name)) throw Error("Use a zcode_remote_* or zcode_config_* tool name, followed by JSON arguments");
+if (!publicTools.some(t => t.name === name)) throw Error("Use an advertised tool: " + publicTools.map(t => t.name).join(", "));
 const args = JSON.parse(json);
 const child = spawn(process.execPath, [fileURLToPath(new URL("./mcp-gateway.mjs", import.meta.url))], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 const timer = setTimeout(() => { console.error("MCP diagnostic timed out; if sending, inspect the task before retrying"); child.kill(); process.exitCode = 1; }, 90000);

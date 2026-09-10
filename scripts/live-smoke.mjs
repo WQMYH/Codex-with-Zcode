@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 const cwd = process.argv[2];
 assert(cwd, "Provide a scratch workspace; this probe creates one ZCode test conversation.");
-const child = spawn(process.execPath, ["scripts/mcp-gateway.mjs"], { stdio: ["pipe", "pipe", "pipe"] });
+const child = spawn(process.execPath, ["scripts/legacy-gateway.mjs"], { stdio: ["pipe", "pipe", "pipe"] });
 child.stderr.resume();
 const pending = new Map();
 let serial = 0;

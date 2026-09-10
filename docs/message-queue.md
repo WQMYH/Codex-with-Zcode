@@ -1,0 +1,97 @@
+# 统一发送与本地收件箱
+
+## 使用
+
+单条、批量和队伍发送共用 `zcode_send`；队伍只是可选 teamId 标签，不另建队列或成员表。
+
+```javascript
+zcode_send({ requestId: "review-round-1", taskIds: [taskA, taskB],
+  teamId: "review-team", prompt: "请分别回传当前进展，不修改文件。" });
+const page = zcode_read({ view: "inbox", teamId: "review-team" });
+zcode_read({ view: "inbox", teamId: "review-team", cursor: page.cursor, waitMs: 30000 });
+zcode_control({ action: "pause", scope: "all", expectedRevision: page.worker.controlRevision });
+const paused = zcode_read({ view: "inbox" });
+zcode_control({ action: "resume", scope: "all", expectedRevision: paused.worker.controlRevision });
+```
+
+taskA/taskB 必须为真实、经用户指定的任务 ID。重试同一发送沿用 requestId；正文、收件人、teamId 和 context 必须相同，否则拒绝。新消息使用新 ID。完整记录保留期间持续去重；正文清理后，整个请求所有收件人的精简记录至少再保留 7 天，之后才可一起过期。不要在去重记录过期后重放旧请求。
+收件箱可按 taskIds、teamId 或两者筛选；不传筛选读取全部队列记录。续读保持相同视图和过滤器，hasMore 时继续读。
+
+发送先持久化，再按需启动后台，不等待模型答复。明确暂停后，新发送只入队；resume 才恢复。后台没有可处理消息时自行退出，下次发送再启动，不随 Codex 启动或系统开机运行。
+启动请求不等于已运行：收件箱 worker.starting 表示已预留启动，running/heartbeat 表示实际存活，paused 表示用户暂停。启动预留在进程拉起前保存，过期启动者不能抢回所有权；恢复与退出交错时重新检查是否需要接班。
+pause/resume 仍是所有 team 共用的控制，必须明确传 scope:"all" 和最近读到的 worker.controlRevision；旧版本号拒绝，不允许较早的恢复操作覆盖别人刚做的暂停。pause 允许在途请求收尾，不停止 ZCode 模型。
+
+## 顺序与状态
+
+- 同任务跨队伍共享 FIFO；关联回复读完且原生 completed 后，下一条才发送。先读快照、再刷新原生状态；候选完成时再次读取快照和状态，尾部、消息数及更新时间一致且无待处理输入才给出 completionConfirmed。原生 UI 仍不提供与发送原子绑定的状态锁。
+- 不同任务不等待彼此的模型回复；每轮最多 8 个任务，单连接内快照最多 4 并发，跨工作区依次重连。
+- 使用同一配置目录/数据库的多个新版插件进程，通过 SQLite 内的顺序票据争用远程连接，不再各自遇锁立即失败。最多 128 个待连接调用，每次等候最多 30 秒，超时尚未开始远程动作；崩溃进程的票据自动回收。模型等待不持有连接。数据库重试仅限本地已回滚的事务，不重试未知发送。不要为同一 Sharing Link 另复制一套独立数据库。
+- 没有单独的 team 数量上限或“一次只运行一个 team”的限制。按 taskId 而非 team 公平轮转：12 个 team 各有一个任务，可以分两轮派发，不用等前 8 个完成。100 条待解决消息是全局容量，不是每个 team 各 100 条。单物理连接的发送请求仍顺序执行；模型回合可重叠，实际模型并发受 ZCode/供应商限制。12 team 为确定性调度测试，不是 12 个实机模型并发验收。
+- queued=持久化；dispatching=进入可能发送阶段；acknowledged=发送获回执；uncertain=回执不明；completed=关联回复读完且原生回合结束，不等于业务验收。
+- needs_attention 表示历史缺口、竞争输入、归档或失败终态等，只阻塞该任务的后续发送。
+- 队伍仅汇总事件，不自动广播、不执行回复中的指令，不实现任务依赖图。
+
+## 回传与人工控制
+
+提示词前加 `[[zcode-ops:<messageId>]]` 传输标识，匹配原生 user 消息及同 turnIndex 的 assistant 正文，不要求模型输出特定备注。
+ZCode 会重写发送的消息 ID，因此不能仅靠请求 ID 关联。旧 completed、用户回显、空助手消息或超时都不能证明本次完成。没有匹配标识时保持未确认，不猜测重发。
+
+发送前 SQLite 事务保存意图；崩溃后的 dispatching 转 uncertain，只观察、不重发。这不是远程 exactly-once 保证。发送前只读检查失败保持 queued；进入可能发送阶段后的错误不自动重试。
+
+失败态接续复用原发送入口：队首 `queued` 消息本身已获授权，目标的上一回合为 `failed` 时可自动调用原生 `sendPrompt → sendText`，沿用当前模型并开启新回合，无需二次恢复授权或伪造 idle。准入在读取基线和发送前刷新状态时均检查；运行中、归档、取消/中断以及 pending inputs 仍阻止发送。已在 `uncertain/acknowledged/needs_attention` 的旧消息不重新变成 queued。无人值守协调者可在既有授权内核实失败结果、释放阻塞、派发一条新的有界恢复指令；不能因为结果不明而重放旧请求。
+
+```javascript
+zcode_control({ action: "cancel_message", messageId }); // 只取消未发项
+zcode_control({ action: "release_message", messageId }); // 用户核对后释放阻塞，不证明完成、不重发
+zcode_control({ action: "stop_task", taskId }); // 请求原生停止，不取消队列
+```
+
+若停止后不应再发队列消息，先 pause。UI 手工输入仍可能竞争；发送前复查空闲，检测竞争后阻塞，不声称跨 UI 原子互斥。
+默认网关已移除直接发送旁路；旧诊断网关不应参与正常队列操作。
+
+## 上下文与接收确认
+
+可选 context 随提示词传给 ZCode，也随收件箱的 envelopes 返回。支持 sourceAgent、sourceTaskId、sourceWorkspace、replyTo、goal、background、constraints、expectedReply 和 references。它们是发送方声明，不是认证身份或新增权限；references 是文本引用，不自动读取附件或授予文件访问。
+
+```javascript
+zcode_send({ requestId: "review-2", taskIds: [taskId], teamId: "review-team",
+  prompt: "请审阅引用的设计，仅回传意见。",
+  context: { sourceAgent: "codex", sourceTaskId: "调用方真实任务ID",
+    goal: "检查设计是否能按现有接口实现", constraints: "只读，不修改文件",
+    expectedReply: "阻碍、证据、最小修正建议", references: ["双方可访问的计划路径"] } });
+// 使用真实且稳定的调用任务 ID；每个独立接收者使用自己的 consumerId。
+const consumerId = "调用方真实任务ID";
+const result = zcode_read({ view: "inbox", taskIds: [taskId], consumerId });
+// 用相同 consumerId 和返回游标继续读；receipt.complete 为 true 后才可确认。
+zcode_control({ action: "acknowledge_message", messageId: envelope.messageId,
+  consumerId, throughEvent: envelope.receipt.throughEvent });
+```
+
+envelopes 为版本 1：携带原始请求、来源声明、目标、team、创建时间、上下文、原生消息/回合映射、状态和 lastEvent；登记读取者时另附 receipt。结果仍是原生角色/正文分段，不把助手文字解析成授权。
+只有 completed/released/cancelled 可确认。服务端保存每个 consumerId 连续实际返回的事件位置，throughEvent 必须同时匹配该位置和当前末事件；第一页提前确认、猜测尾部位置或跳过分页均拒绝。事件、envelopes 和读取进度在同一个短事务中处理。
+每条记录最多登记 16 个读取者，全部已登记读取者分别确认后才允许清理；新读取者在清理前加入会撤销清理资格。不传 consumerId 只是旁观读取，不取得保留权，也不能确认。无法预先保护尚未登记的未来读取者。consumerId 是本机调用方声明，不是身份认证；不要共享或不断生成新 ID。
+确认不表示业务验收；遗弃读取者不会自动超时删除其未确认结果，容量不足时明确回压。
+
+## 容量与自动清理
+
+- 全局最多 500 条完整往返记录；达到条数或字节压力时，按创建顺序清理最旧的“终态且显式确认接收”的提示词、context 与关联事件正文。保留短期消息 ID、请求指纹、回合映射和状态；不删除 ZCode 原生会话。
+- 未发、运行中、结果不明以及完成但未确认的记录不自动清理。全部不可清理时拒绝新入队；回传采集到达容量时暂停 worker，保留旧游标和原状态，不伪造完成、不自动重发。清理空间并 resume 后继续读取；远端历史已缺失则仍报告 historyGap。
+- 清理在入队、采集、接收确认时进行，无额外定时清理进程。过期清理后的旧游标通过全局 retention.throughEvent 保守报告 historyGap，可能包含其他 team 的清理；调用方须明确接受缺口再建立读取基线。
+- 20 MB 指 20,000,000 字节，计入主数据库和事务辅助文件，不含插件代码、外部附件及人工备份。为约束事务期间峰值，主库硬上限约 9 MB，正常写入按约 7 MB 已用页面提前清理/回压；其余为 SQLite 页面、控制更新和回滚日志留余量。因此 500 是条数上限，不保证装得下 500 条长回复；此前按 16 MB 有效数据估算不适用于这一日志也计入的严格预算。
+- 使用 SQLite DELETE 回滚日志、FULL 同步、关闭 cache spilling、每连接设置 max_page_count，不使用无限增长的 WAL，不运行需要额外整库副本的 VACUUM。删除后空间供后续记录复用，文件不必立即缩小；secure_delete 清除释放页中的正文，但不是针对磁盘备份/底层介质的取证销毁保证。机制依据：[SQLite PRAGMA](https://www.sqlite.org/pragma.html#pragma_max_page_count)、[回滚日志机制](https://www.sqlite.org/lockingv3.html)。
+- 超预算旧库不自动删除或压缩，保留原文件并拒绝迁移。限制覆盖新版插件正常独占管理的数据库；第三方绕过插件写同一文件不在保证范围内。
+
+## 数据与资源
+
+- 本机 config.json 同目录下的 messages.sqlite 保存提示词、回复和事件，运行时可能有 -journal；默认 CODEX_HOME/zcode-ops/，本机为 E:/Programming/IDE/.codex/zcode-ops/。不进入 Git 或安装包，不开放端口，不搬迁目录。
+- schema 4 在事务中升级旧库，保留消息、事件位置、暂停状态。schema 3 没有按读取者记录的完整交付证明，因此未清理正文的旧确认会撤销，必须重新读完并确认；已经清理的正文不会伪造恢复。旧 worker 正在运行时拒绝迁移，先停止旧 worker。不必关闭 Codex 对话：可在当前任务内从已安装目录启动 `scripts/remote-call.mjs` 使用新版 MCP；但不能同时调用旧版远程锁和新版票据。安装清单与当前内置工具入口版本应分别核对。
+- 新公开游标是绑定视图和过滤器的不透明字符串；旧内部数字游标不可直接传入，升级后重新读取建立基线。
+- 待解决消息最多 100 条，单次最多 8 个任务，提示词最多 31,000 字符且提示词与 context 合计不超过 40,000 UTF-8 字节；context 不超过 8,000 字节，字段至多 2,048 字符，references 最多 10 项。超长请求明确拒绝，发送方应提供摘要及引用，不静默截断。
+- 每任务每轮正文 3,000 字符；收件箱每页最多 100 事件，事件与关联 envelopes 共用约 64,000 字节预算，单个历史遗留超大事件仍允许完整返回。附带至多 100 条简短状态记录及容量统计；不是完整对话镜像。
+- 有工作时每轮间隔 3 秒，另加请求及轮转时间，不保证 3 秒响应；无可处理工作退出。
+- PID 检查保守；不自动抢占可能被复用的 PID。新版不创建 remote.lock，进程崩溃后在下次连接申请时回收票据。遗留旧锁仅在明确的所属 PID 已退出时清理；空文件、非法 PID 或可能仍存活的旧锁拒绝连接，要求核实。后台被外部强杀后，下次 send/resume 可恢复，不提供独立常驻保活服务。
+- 后台只采集队列消息。纯只读监控使用 zcode_tasks/zcode_read，不启动后台；采集不需要 Codex 模型轮询，但新事件不主动唤醒 Codex。
+
+## 验证
+
+`npm run smoke` 覆盖 500 条轮换、未确认结果保护、UTF-8 字节限制、去重残留记录、schema-2 WAL/schema-3 真旧库迁移、超额事务回滚和日志计入峰值。并发回归另使用 4 个真实子进程执行 80 轮入队/读取及 12 次模拟远程访问，检查去重、互斥、崩溃回收、分页提前确认、多读取者保护、12 路启动预留、退出时恢复、旧状态与变化中的快照。模拟远端不等于实机多模型并发验收。实机与安装记录见 [执行记录](../plans/2026-09-09-message-return.md)。

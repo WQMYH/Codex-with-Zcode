@@ -17,6 +17,18 @@ Verified against the installed ZCode desktop bundle and a live Remote Control se
 - Sharing links are stored without format probing. URL parsing and required authentication fields are checked only when a remote operation is attempted. A connection failure asks for a new link; no automatic send retry occurs.
 - Codex startup performs no ZCode operation and shows no link prompt. OpenAI's optional plugin components currently run through the ChatGPT MCP Apps UI path, so this local Codex plugin uses the native conversation input instead of a separate imitation window: <https://developers.openai.com/plugins/build/chatgpt-ui>.
 
+## Failed-turn continuation (2026-09-10)
+
+The installed desktop bundle `out/host/index.js` routes `sendPrompt` through
+`sendPromptToAgent` to V4 `sendText` with `heldQueueDisposition: keepQueueAndSend`.
+The installed `resources/glm/zcode.cjs` implements `sendText` / `startPromptTurn`
+using native `app.sendInput`; it checks model readiness and input admission.
+There is no facade requirement to rewrite a previous `error` to `idle` first.
+The queue's old `idle/completed` allowlist prevented this native path from being
+called. Queued authorized prompts now also admit `failed`, while rechecking the
+target and retaining the existing pending-input, FIFO and uncertain-send guards.
+`resumeTask` remains session loading/model recovery, not proof that a new turn ran.
+
 ## Large snapshot repair (2026-09-09)
 
 `Invalid remote frame` on long conversations was a receiver-limit bug, not evidence
@@ -46,5 +58,82 @@ and never record link secrets or conversation bodies in diagnostics.
 
 The previous eight-task review monitor was retired at the user's request. Its
 two-round review gate is no longer a prerequisite for the Bio-Harness handoff.
+
+## Message continuation (2026-09-09)
+
+Installed `out/host/index.js` implements `limitTaskSnapshotMessages` as a tail slice,
+with `history.truncatedBefore` and `totalMessages`. No snapshot before/after-history
+parameter was found in that implementation. Live snapshots include message `id`,
+`role`, `content`, and `turnIndex`; some initial assistant records precede a user
+record with the same turn index, so turn index alone is not enough for correlation.
+
+`zcode_remote_read` now pages forward within the returned window, using an opaque,
+stateless checkpoint containing a target digest, native message ID, consumed UTF-16
+offset, content-prefix digest and native status/pending-count fingerprint. It has
+no transcript cache or background process. A cursor continues across separate MCP
+gateway processes. The last consumed message can grow or be replaced; an absent
+anchor produces `historyGap` without advancing it. Edits before that anchor are
+outside this tail-continuation contract. `hasMore` covers the plugin's output cap,
+not unavailable native history; `tailCursor` is an explicit skip-to-current-end.
+
+`zcode_remote_wait(mode: "messages")` requires a message cursor and returns new
+content, state/pending-count changes, a history gap, or timeout. Unchanged old
+`completed` state alone does not wake this mode as a new reply. Default status
+mode remains available with its distinct status cursor. Both release connections
+between polls, with the wait window plus native request latency determining total
+duration. Missing tasks or transport failures propagate errors, not completion.
+
+`zcode_remote_send` captures a baseline before sending; a failed baseline prevents
+the send. ACK returns the baseline cursor and the existing trace/query/message IDs.
+`requestMessageId` correlation requires the exact user ID and subsequent assistant
+records with the same native turn index, before the next user message. If the
+runtime rewrites that ID or the user record falls out of the window, correlation
+stays unconfirmed. Correlation is snapshot evidence, not proof of final delivery
+of all paginated text, task completion, or business acceptance. No injected receipt
+prompt, model inspection, or automatic retry is needed for continuation.
+
+Live MCP verification on 2026-09-09 read 46,481 characters across 12 pages from
+`sess_66299dd9-bd22-49a4-8b0a-2e5f5d36be04`, spawning a separate gateway for each
+call. At the end `hasMore=false`, another read returned zero messages, and message
+wait returned timeout with unchanged native `completed` status. The cursor was
+275 characters. No Sharing Link or conversation bodies were persisted for this check.
+
+One no-tool/no-file-change prompt was sent to the existing plugin-review task
+`sess_364f3d09-4b3d-4db4-811f-3624dde5a68f`. The first wait returned its native user
+message and an empty assistant record while running; the next returned the growing
+assistant body `ZCODE_RETURN_OK_20260909` with native `completed`. The native user
+ID was newly generated, not the supplied send message ID. Therefore `correlation`
+correctly remained `unconfirmed`; `assistantTextReturned` separately reports actual
+assistant text returned in a page. Exact request-ID correlation is supported by the
+adapter contract and deterministic checks, but NOT verified available in this
+desktop path. This is a native limitation, not a reason to resend the prompt.
+
+## Concurrency boundary (2026-09-09)
+
+The relay authenticates a Sharing Link as one mobile terminal. Opening multiple
+WebSockets with the same link causes the relay to return `KICKED`; removing the
+old global lock and creating one connection per read is therefore invalid.
+The adapter keeps at most one physical connection and exposes `zcode_remote_read_many`
+and `zcode_remote_wait_many` for multi-task monitoring. It groups tasks by
+workspace, opens one bridge per group, and runs that group's `getTaskSnapshot`
+RPCs concurrently through independent request IDs. Groups for different
+workspaces are switched sequentially because the installed desktop runtime
+keeps one `currentBridge` per remote-control window. A second bridge open on
+the same connection stalled a subsequent snapshot in live testing; resetting
+the outgoing frame sequence did not resolve it and was reverted. Close and
+reconnect between workspace groups. Two live tasks in different workspaces
+returned in 4.9 seconds with no missing targets or errors.
+
+Single-task calls remain serialized by the connection guard. The batch tools are
+the supported concurrency boundary; they do not create a second terminal,
+change task write ordering, or provide event push. Direct read/wait still
+requires a caller. The explicit background queue worker now polls independently
+without LLM turns; this is not a Codex wakeup channel. Queue details and limits
+are in [message-queue.md](message-queue.md).
+
+Batch calls accept at most 8 task IDs, run at most 4 snapshot RPCs concurrently
+per workspace, and default to 3000 returned characters per task. Failed targets
+have separate errors without discarding successful pages; all pending calls
+settle before switching or closing a bridge.
 
 The desktop bundle is implementation evidence, not a stable public contract. Re-run the live snapshot and switch verification after ZCode upgrades.

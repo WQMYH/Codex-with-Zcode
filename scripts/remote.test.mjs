@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encode, decode, frames, FrameReader, checksum } from "./remote-codec.mjs";
 import { RemoteClient, validateRemoteUrl } from "./remote-client.mjs";
-import { normalizeTask, callRemoteTool, waitForTask } from "./remote-tools.mjs";
+import { normalizeTask, callRemoteTool, waitForTask, waitForMessages, readMany, waitForMany } from "./remote-tools.mjs";
+import { messagePage } from "./remote-messages.mjs";
 import { callConfigTool, readConfig, validateConfig, writeConfig } from "./config.mjs";
 
 const bridge = { bridgeSessionId: "test", bridgeGeneration: 1, initialTaskId: "sess_test", workspacePath: "test-workspace" };
@@ -168,6 +169,100 @@ await assert.rejects(callRemoteTool("zcode_remote_tasks", { includeArchived: "fa
 const read = await callRemoteTool("zcode_remote_read", { taskId: "sess_test" }, connect);
 assert.equal(read.messages[0].content, "你好");
 
+// Batch reads use one bridge and run same-workspace snapshots concurrently.
+const batchTask = { taskId: "sess_batch", workspaceKind: "local", workspacePath: "test-workspace", displayStatus: "running" };
+const batchOther = { taskId: "sess_batch_other", workspaceKind: "local", workspacePath: "test-workspace", displayStatus: "running" };
+let batchActive = 0, batchPeak = 0, batchOpens = 0;
+const batchSnapshots = new Map([
+  [batchTask.taskId, { messages: [{ id: "a", role: "assistant", content: "a" }] }],
+  [batchOther.taskId, { messages: [{ id: "b", role: "assistant", content: "b" }] }]
+]);
+const batchConnect = action => action({
+  list: async () => ({ workspaces: [], tasks: [batchTask, batchOther] }),
+  open: async () => { batchOpens++; },
+  snapshot: async taskId => { batchActive++; batchPeak = Math.max(batchPeak, batchActive); await new Promise(resolve => setTimeout(resolve, 5)); batchActive--; return batchSnapshots.get(taskId); }
+});
+const batched = await readMany({ taskIds: [batchTask.taskId, batchOther.taskId], maxChars: 1000 }, batchConnect);
+assert.equal(batched.tasks.length, 2); assert.equal(batchOpens, 1); assert.equal(batchPeak, 2);
+const batchCursors = Object.fromEntries(batched.tasks.map(row => [row.task.taskId, row.cursor]));
+const batchWait = await waitForMany({ taskIds: [batchTask.taskId, batchOther.taskId], afterCursors: batchCursors, timeoutMs: 0 }, batchConnect);
+assert.equal(batchWait.reason, "timeout"); assert.equal(batchWait.changed, false);
+await assert.rejects(waitForMany({ taskIds: [batchTask.taskId], afterCursors: {}, timeoutMs: 0 }, batchConnect), /Missing afterCursor/);
+await assert.rejects(callRemoteTool("zcode_remote_read_many", { taskIds: ["bad"] }, batchConnect), /native sess_/);
+await assert.rejects(callRemoteTool("zcode_remote_wait_many", { taskIds: [batchTask.taskId], afterCursors: { "sess_other": "x" }, timeoutMs: 0 }, batchConnect), /Missing afterCursor/);
+
+// Stateless continuation covers long text, empty messages, streaming edits and gaps.
+const longText = "中😀文".repeat(15000);
+const longSnapshot = { messages: [{ id: "long", role: "assistant", content: longText },
+  { id: "empty", role: "assistant", content: "" }, { id: "next", role: "assistant", content: "末尾" }], history: { totalMessages: 3, truncatedBefore: false } };
+let page = messagePage(longSnapshot, task, { maxChars: 257 }), reconstructed = "", iterations = 0;
+for (;;) {
+  for (const m of page.messages) {
+    assert(!/[\uD800-\uDBFF]$/.test(m.content));
+    assert(!/^[\uDC00-\uDFFF]/.test(m.content));
+    if (m.id === "long") { assert.equal(m.contentOffset, reconstructed.length); reconstructed += m.content; }
+  }
+  if (!page.hasMore) break;
+  assert(++iterations < 500);
+  page = messagePage(longSnapshot, task, { maxChars: 257, afterCursor: page.cursor });
+}
+assert.equal(reconstructed, longText);
+assert.equal(messagePage(longSnapshot, task, { afterCursor: page.cursor }).messageCount, 0);
+assert.equal(page.cursor, messagePage(longSnapshot, task, { afterCursor: page.cursor }).cursor);
+assert.throws(() => messagePage(longSnapshot, { ...task, taskId: "sess_other" }, { afterCursor: page.cursor }), /another task/);
+assert.throws(() => messagePage(longSnapshot, { ...task, workspacePath: "other" }, { afterCursor: page.cursor }), /another task/);
+assert.throws(() => messagePage(longSnapshot, task, { afterCursor: "malformed" }), /Invalid message cursor/);
+assert.throws(() => messagePage({ messages: [{ id: "same" }, { id: "same" }] }, task), /duplicate/);
+const tailSnapshot = { messages: [{ id: "stream", role: "assistant", content: "你好" }] };
+const initialTail = messagePage(tailSnapshot, task).cursor;
+tailSnapshot.messages[0].content += "，世界";
+const appended = messagePage(tailSnapshot, task, { afterCursor: initialTail });
+assert.equal(appended.messages[0].content, "，世界"); assert.equal(appended.messages[0].contentOffset, 2);
+tailSnapshot.messages[0].content = "修订";
+const replaced = messagePage(tailSnapshot, task, { afterCursor: appended.cursor });
+assert.equal(replaced.messages[0].replace, true); assert.equal(replaced.messages[0].content, "修订");
+tailSnapshot.messages[0].content = "";
+assert.equal(messagePage(tailSnapshot, task, { afterCursor: replaced.cursor }).messages[0].replace, true);
+const gap = messagePage({ messages: [], history: { truncatedBefore: true } }, task, { afterCursor: initialTail });
+assert.equal(gap.historyGap, true); assert.equal(gap.messageCount, 0); assert.equal(gap.cursor, initialTail);
+assert.equal(messagePage(longSnapshot, task).historyGap, false);
+assert.equal(messagePage({ ...longSnapshot, history: { truncatedBefore: true } }, task).history.truncatedBefore, true);
+const emptyCursor = messagePage({ messages: [] }, task).cursor;
+assert.equal(messagePage({ ...longSnapshot, history: { truncatedBefore: true } }, task, { afterCursor: emptyCursor }).historyGap, true);
+
+// Fast reply may arrive before send ACK: the returned cursor must still precede it.
+const flow = { messages: [{ id: "old", role: "assistant", content: "旧答案", turnIndex: 0 }] };
+const flowConnect = action => action({ list: async () => ({ tasks: [task] }), open: async () => {}, snapshot: async () => flow,
+  send: async () => { flow.messages.push({ id: "request", role: "user", content: "新问题", turnIndex: 1 },
+    { id: "reply", role: "assistant", content: "新答案", turnIndex: 1 }); return { request: { messageId: "request" }, result: { accepted: true } }; } });
+const sentFlow = await callRemoteTool("zcode_remote_send", { taskId: task.taskId, prompt: "新问题" }, flowConnect);
+assert.equal(sentFlow.delivery, "acknowledged");
+const replyFlow = await callRemoteTool("zcode_remote_wait", { taskId: task.taskId, mode: "messages", afterCursor: sentFlow.cursor,
+  requestMessageId: sentFlow.request.messageId, timeoutMs: 0 }, flowConnect);
+assert.deepEqual(replyFlow.messages.map(m => m.id), ["request", "reply"]);
+assert.equal(replyFlow.correlation.status, "assistant_reply_observed");
+assert.equal(replyFlow.assistantTextReturned, true);
+assert.deepEqual(replyFlow.correlation.assistantMessageIds, ["reply"]);
+assert.equal(messagePage(flow, task, { requestMessageId: "unknown" }).correlation.status, "unconfirmed");
+assert.equal(messagePage({ messages: flow.messages.slice(0, 2) }, task, { requestMessageId: "request" }).correlation.status, "user_message_observed");
+const rewrittenId = { messages: flow.messages.map(m => m.id === "request" ? { ...m, id: "native-request" } : m) };
+const rewrittenPage = messagePage(rewrittenId, task, { afterCursor: sentFlow.cursor, requestMessageId: "request" });
+assert.equal(rewrittenPage.correlation.status, "unconfirmed"); assert.equal(rewrittenPage.assistantTextReturned, true);
+const sameTurn = { messages: [{ id: "old-reply", role: "assistant", content: "old", turnIndex: 0 },
+  { id: "user", role: "user", content: "question", turnIndex: 0 },
+  { id: "later-user", role: "user", content: "another", turnIndex: 0 },
+  { id: "later-reply", role: "assistant", content: "later", turnIndex: 0 }] };
+assert.equal(messagePage(sameTurn, task, { requestMessageId: "user" }).correlation.status, "user_message_observed");
+let preflightSends = 0;
+await assert.rejects(callRemoteTool("zcode_remote_send", { taskId: task.taskId, prompt: "x" }, action => action({
+  list: async () => ({ tasks: [task] }), open: async () => {}, snapshot: async () => { throw Error("snapshot offline"); },
+  send: async () => { preflightSends++; } })), /snapshot offline/);
+assert.equal(preflightSends, 0);
+await assert.rejects(callRemoteTool("zcode_remote_wait", { taskId: task.taskId, mode: "messages" }, connect), /requires afterCursor/);
+await assert.rejects(callRemoteTool("zcode_remote_wait", { taskId: task.taskId, mode: "unknown" }, connect), /Invalid mode/);
+await assert.rejects(callRemoteTool("zcode_remote_wait", { taskId: task.taskId, afterCursor: sentFlow.cursor }, connect), /Invalid status cursor/);
+await assert.rejects(callRemoteTool("zcode_remote_read", { taskId: task.taskId, maxChars: 25000 }, connect), /Invalid maxChars/);
+
 // Waiting must not hold the shared connection/lock while sleeping or infer interruption from age.
 let tick = 0, held = false, poll = 0;
 const states = ["running", "running", "waiting_permission"];
@@ -188,6 +283,25 @@ const missing = await callRemoteTool("zcode_remote_wait", { taskId: "sess_missin
 assert.equal(missing.reason, "not_found"); assert.equal(missing.task, null);
 await assert.rejects(callRemoteTool("zcode_remote_wait", { taskId: task.taskId, timeoutMs: 30001 }, connect), /Invalid timeoutMs/);
 await assert.rejects(callRemoteTool("zcode_remote_wait", { taskId: task.taskId }, async () => { throw Error("offline"); }), /offline/);
+
+// A stale completed status must not masquerade as a new reply. Release lock before delay.
+let messagePolls = 0, messageLock = false, messageTick = 0;
+const messageConnect = action => {
+  assert.equal(messageLock, false); messageLock = true; messagePolls++;
+  return Promise.resolve(action({ list: async () => ({ tasks: [task] }), open: async () => {}, snapshot: async () => flow }))
+    .finally(() => { messageLock = false; });
+};
+const messageClock = { now: () => messageTick, delay: async ms => { assert.equal(messageLock, false); messageTick += ms; } };
+const noReply = await waitForMessages({ taskId: task.taskId, afterCursor: replyFlow.cursor, timeoutMs: 3000 }, messageConnect, messageClock);
+assert.equal(noReply.timedOut, true); assert.equal(noReply.messageCount, 0); assert(messagePolls > 1);
+assert.equal(noReply.assistantTextReturned, false);
+const messagesArrive = await waitForMessages({ taskId: task.taskId, afterCursor: replyFlow.cursor, timeoutMs: 3000 }, messageConnect,
+  { now: () => messageTick, delay: async ms => { assert.equal(messageLock, false); messageTick += ms;
+    flow.messages.at(-1).content += "（续）"; } });
+assert.equal(messagesArrive.reason, "messages"); assert.equal(messagesArrive.messages[0].content, "（续）");
+flow.runtime = { pendingPermissions: [{}] };
+const pendingInput = await waitForMessages({ taskId: task.taskId, afterCursor: messagesArrive.cursor, timeoutMs: 0 }, messageConnect);
+assert.equal(pendingInput.reason, "state_changed"); assert.equal(pendingInput.pendingPermissions, 1);
 
 // Recheck after attaching; a completed turn must not receive a late stop. Never retry an uncertain stop.
 let stops = 0, stopLists = 0, stopStatus = "running", stopFails = false;
