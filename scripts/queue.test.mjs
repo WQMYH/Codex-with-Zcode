@@ -97,6 +97,15 @@ try {
   for (const key of ["pendingPermissions", "pendingElicitations", "pendingCommands"]) {
     assert.deepEqual(await recoveryCase({ runtime: { [key]: [{}] } }), { sends: 0, state: "queued" });
   }
+  assert.deepEqual(normalizeTask({ displayStatus: "error", lastError: { code: "E_MODEL",
+    attribution: { providerErrorCode: "1308" } } }).nativeExecutionFailure,
+    { stage: "native_execution", source: "provider", reason: "rate_limited", code: "1308" });
+  assert.deepEqual(normalizeTask({ displayStatus: "error", lastError: { reason: " ",
+    attribution: { reason: "rate_limited" } } }).nativeExecutionFailure,
+    { stage: "native_execution", source: "provider", reason: "rate_limited" });
+  assert.deepEqual(normalizeTask({ displayStatus: "error", lastError: { code: "", reason: " ",
+    statusCode: "429", attribution: { providerErrorCode: [], reason: null } } }).nativeExecutionFailure,
+    { stage: "native_execution", source: "zcode_native", reason: "unknown" });
   // An ACK plus the native user message proves handoff. A failed model turn is
   // classified separately, preserving provider detail only when ZCode exposes it.
   for (const [suffix, lastError, expected] of [["rate", { code: "1308", attribution: { source: "provider", reason: "rate_limited",
@@ -119,6 +128,23 @@ try {
     assert.deepEqual(view.envelopes[0].nativeExecutionFailure, expected);
     if (suffix === "unknown") assert.equal(queue.resolve({ messageId, decision: "release" }).state, "released");
   }
+  const competingTaskId = "sess_failure-competing";
+  const competingMessageId = queue.enqueue({ requestId: "failure-competing", taskIds: [competingTaskId], prompt: "work" }).messages[0].messageId;
+  queue.state(queue.get(competingMessageId), "acknowledged");
+  queue.observe(queue.get(competingMessageId), { task: normalizeTask({ taskId: competingTaskId, workspacePath: "workspace", displayStatus: "running" }),
+    cursor: "cursor-marker", historyGap: false, messages: [
+      { id: "user-marker", role: "user", turnIndex: 1, content: marker(competingMessageId) + "\nwork", contentOffset: 0 }
+    ] });
+  assert.equal(queue.get(competingMessageId).state, "acknowledged");
+  queue.observe(queue.get(competingMessageId), { task: normalizeTask({ taskId: competingTaskId, workspacePath: "workspace", displayStatus: "error",
+    lastError: { code: "1308" } }), cursor: "cursor-competing", historyGap: false, messages: [
+    { id: "user-manual", role: "user", turnIndex: 2, content: "manual", contentOffset: 0 },
+    { id: "assistant-manual", role: "assistant", turnIndex: 2, content: "", contentOffset: 0 }
+  ] });
+  const competingView = queue.read({ taskId: competingTaskId, limit: 20 });
+  assert.equal(queue.get(competingMessageId).state, "needs_attention");
+  assert.equal(competingView.events.some(event => event.kind === "native_execution_failed"), false);
+  assert.equal(Object.hasOwn(competingView.envelopes[0], "nativeExecutionFailure"), false);
   queue.db.prepare("UPDATE worker SET desired=0").run();
   await tick(queue, token, connect); assert.equal(sent.length, 3);
   // Bounded snapshot concurrency and workspace barrier, including one target error.

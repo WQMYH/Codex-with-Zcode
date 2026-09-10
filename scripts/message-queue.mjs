@@ -282,7 +282,7 @@ export class MessageQueue {
       if (row.native_status !== page.task.status) this.event(row, "native_status", { status: page.task.status });
       this.db.prepare("UPDATE messages SET cursor=?,native_id=?,turn_index=?,reply_seen=?,native_status=? WHERE id=?")
         .run(page.cursor, nativeId, turn, reply, page.task.status, row.id);
-      if (nativeId && page.task.status === "failed") this.event(row, "native_execution_failed", {
+      if (!competing && nativeId && page.task.status === "failed") this.event(row, "native_execution_failed", {
         ...(page.task.nativeExecutionFailure ?? { stage: "native_execution", source: "zcode_native", reason: "unknown" }),
         userMessageObserved: true, assistantTextReturned: !!reply
       });

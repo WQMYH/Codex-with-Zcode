@@ -41,16 +41,20 @@ export const remoteTools = [
 function nativeExecutionFailure(error) {
   if (!error || typeof error !== "object" || Array.isArray(error)) return { stage: "native_execution", source: "zcode_native", reason: "unknown" };
   const attribution = error.attribution && typeof error.attribution === "object" && !Array.isArray(error.attribution) ? error.attribution : {};
-  const scalar = value => typeof value === "string" && value.length <= 128 ? value : Number.isSafeInteger(value) ? String(value) : null;
-  const code = scalar(error.code ?? attribution.providerErrorCode);
-  const rawStatusCode = error.statusCode ?? attribution.statusCode;
-  const statusCode = Number.isInteger(rawStatusCode) && rawStatusCode >= 100 && rawStatusCode <= 599 ? rawStatusCode : null;
-  const reason = scalar(error.reason ?? attribution.reason);
-  const rateLimited = reason === "rate_limited" || statusCode === 429 || code === "1308";
-  const retryable = typeof (error.retryable ?? attribution.retryable) === "boolean" ? error.retryable ?? attribution.retryable : null;
-  const providerId = scalar(error.providerId ?? attribution.providerId), modelId = scalar(error.modelId ?? attribution.modelId);
-  return { stage: "native_execution", source: rateLimited ? "provider" : scalar(attribution.source) ?? "zcode_native",
-    reason: rateLimited ? "rate_limited" : reason ?? "unknown", ...(code ? { code } : {}),
+  const scalar = value => {
+    const result = typeof value === "string" ? value.trim() : Number.isSafeInteger(value) ? String(value) : "";
+    return result && result.length <= 128 ? result : null;
+  };
+  const integer = value => Number.isInteger(value) && value >= 100 && value <= 599 ? value : null;
+  const outerCode = scalar(error.code), providerCode = scalar(attribution.providerErrorCode);
+  const outerReason = scalar(error.reason), providerReason = scalar(attribution.reason);
+  const outerStatus = integer(error.statusCode), providerStatus = integer(attribution.statusCode);
+  const rateLimited = [outerCode, providerCode].includes("1308") || [outerReason, providerReason].includes("rate_limited") || [outerStatus, providerStatus].includes(429);
+  if (!rateLimited) return { stage: "native_execution", source: "zcode_native", reason: "unknown" };
+  const code = providerCode ?? outerCode, statusCode = providerStatus ?? outerStatus;
+  const retryable = typeof attribution.retryable === "boolean" ? attribution.retryable : typeof error.retryable === "boolean" ? error.retryable : null;
+  const providerId = scalar(attribution.providerId) ?? scalar(error.providerId), modelId = scalar(attribution.modelId) ?? scalar(error.modelId);
+  return { stage: "native_execution", source: "provider", reason: "rate_limited", ...(code ? { code } : {}),
     ...(statusCode ? { statusCode } : {}), ...(retryable !== null ? { retryable } : {}),
     ...(providerId ? { providerId } : {}), ...(modelId ? { modelId } : {}) };
 }
