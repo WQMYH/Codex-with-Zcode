@@ -2,6 +2,7 @@
   "name": "zcode-ops",
   "version": "0.1.6",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "engines": { "node": ">=24" },
   "dependencies": {

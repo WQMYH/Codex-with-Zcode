@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { MessageQueue, marker, validateQueueArgs } from "./message-queue.mjs";
 import { tick, dispatch } from "./queue-worker.mjs";
 import { readMany } from "./remote-tools.mjs";
+import { messagePage } from "./remote-messages.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "zcode-queue-test-"));
 let queue = new MessageQueue(join(dir, "messages.sqlite"));
@@ -111,9 +112,47 @@ try {
       return { messages: [] };
     }
   }));
-  assert.equal(peak, 4); assert.deepEqual(opened, ["one", "two"]);
+  assert.equal(peak, 4); assert.deepEqual(opened, ["one", "two", "one"], "One isolated retry for the failed read");
   assert.equal(many.tasks.length, 7); assert.equal(many.errors[0].taskId, "sess_1");
   assert.equal(active, 0);
+  // A stalled snapshot must not poison other tasks' completion confirmation.
+  const isolated = new MessageQueue(join(dir, "reconcile.sqlite"));
+  try {
+    const targets = ["sess_good-a", "sess_stalled", "sess_good-b"].map(taskId => ({ taskId,
+      workspacePath: "workspace", workspaceKind: "local", displayStatus: "completed", updatedAt: 1 }));
+    const receipts = isolated.enqueue({ requestId: "reconcile", taskIds: targets.map(t => t.taskId), prompt: "progress" });
+    const snapshots = new Map();
+    for (const [i, task] of targets.entries()) {
+      const id = receipts.messages[i].messageId;
+      const snapshot = { messages: [{ id: `user-${i}`, role: "user", turnIndex: 1, content: marker(id) + "\nprogress" },
+        { id: `reply-${i}`, role: "assistant", turnIndex: 1, content: "partial" }] };
+      isolated.state(isolated.get(id), "acknowledged");
+      isolated.observe(isolated.get(id), { task: { ...task, status: "running" }, ...messagePage(snapshot, task) });
+      snapshot.messages[1].content += " final";
+      snapshots.set(task.taskId, snapshot);
+    }
+    const followup = isolated.enqueue({ requestId: "followup", taskIds: [targets[0].taskId], teamId: "another-team", prompt: "next" }).messages[0].messageId;
+    isolated.db.exec("UPDATE worker SET desired=1");
+    const owner = isolated.acquire(), sends = [];
+    const connect = action => {
+      let poisoned = false;
+      return action({ open: async () => {}, list: async () => ({ tasks: targets }),
+        snapshot: async id => {
+          await Promise.resolve();
+          if (id === "sess_stalled") poisoned = true;
+          if (poisoned) throw Error("A stalled snapshot poisoned this connection");
+          return structuredClone(snapshots.get(id));
+        }, send: async id => { sends.push(id); return { result: { accepted: true } }; } });
+    };
+    await tick(isolated, owner, connect);
+    assert.equal(isolated.get(receipts.messages[0].messageId).state, "completed", "Recover a good task after a shared-connection failure");
+    assert.equal(isolated.get(receipts.messages[2].messageId).state, "completed");
+    assert.equal(isolated.get(receipts.messages[1].messageId).state, "acknowledged", "No guessed completion for the unavailable task");
+    assert.equal(isolated.worker().error, "some_targets_unavailable");
+    assert.equal(isolated.get(followup).state, "queued"); assert.deepEqual(sends, []);
+    await tick(isolated, owner, connect);
+    assert.deepEqual(sends, [targets[0].taskId], "Only the new authorized follow-up sends, never an old request");
+  } finally { isolated.close(); }
   assert.equal(marker(first.messages[0].messageId).startsWith("[[zcode-ops:"), true);
   console.log("zcode-ops durable queue: FIFO, teams, no duplicate send, crash recovery, correlation, stop and bounded batch isolation OK");
 } finally { queue.close(); rmSync(dir, { recursive: true, force: true }); }

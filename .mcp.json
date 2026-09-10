@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "zcode-ops": {
-      "command": "D:\\Program Files\\nodejs\\node.exe",
+      "command": "node",
       "args": ["./scripts/mcp-gateway.mjs"],
       "cwd": ".",
       "enabled": true,

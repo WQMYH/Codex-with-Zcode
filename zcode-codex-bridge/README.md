@@ -47,13 +47,8 @@ Every request ID gets an exclusive local receipt before dispatch. Concurrent dup
 
 ## Install and bind
 
-1. In ZCode, add this directory as a local marketplace:
-
-   ~~~text
-   <repository>/zcode-codex-bridge
-   ~~~
-
-2. Install <code>zcode-codex-bridge</code> from marketplace <code>zcode-codex-local</code>.
+1. In ZCode, open a workspace, then **Settings → Plugins → Create → Add marketplace**. Enter <code>WQMYH/Codex-with-Zcode</code> or its GitHub URL.
+2. Install <code>zcode-codex-bridge</code> from marketplace <code>codex-with-zcode</code>. For local development, adding <code>&lt;repository&gt;/zcode-codex-bridge</code> still uses the existing <code>zcode-codex-local</code> marketplace.
 3. Configure the fields declared in <code>plugin/.zcode-plugin/plugin.json</code>:
 
    - <code>codex_script</code>: installed <code>@openai/codex/bin/codex.js</code>
@@ -67,7 +62,7 @@ Every request ID gets an exclusive local receipt before dispatch. Concurrent dup
 4. From the authorized Codex task environment, save a short-lived desktop-host binding:
 
    ~~~text
-   node plugin/scripts/host-client.mjs --configure-host <plugin-data-directory> <official-app-tools-server.mjs> <ISO-expiry>
+   node "<installed-plugin-directory>/scripts/host-client.mjs" --configure-host <plugin-data-directory> <official-app-tools-server.mjs> <ISO-expiry>
    ~~~
 
    The command requires the current Codex desktop environment and writes only <code>host-config.json</code> under the plugin data directory. It does not print the pipe address.
@@ -110,7 +105,7 @@ Live acceptance completed on 2026-09-09:
 - <code>requireIdle: true</code> returned <code>not_idle</code>, <code>sent: false</code> for an active task.
 - Direct <code>notLoaded</code> wake-up passed; the native Codex turn replied only with <code>ZCODE_CONFIRM_ONLY</code> and used no tools.
 
-See [TEST-RESULTS.md](TEST-RESULTS.md) for the evidence record. Project-wide future work remains in the [active roadmap](../README.md#8-roadmap-and-current-plans).
+See [TEST-RESULTS.md](TEST-RESULTS.md) for the evidence record. Project-wide future work remains in the [roadmap](../README.md#roadmap).
 
 ## Layout
 

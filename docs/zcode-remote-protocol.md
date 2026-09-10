@@ -137,3 +137,31 @@ have separate errors without discarding successful pages; all pending calls
 settle before switching or closing a bridge.
 
 The desktop bundle is implementation evidence, not a stable public contract. Re-run the live snapshot and switch verification after ZCode upgrades.
+
+## Batch completion isolation (2026-09-10)
+
+A reported queue head stayed `acknowledged` / native `running` after the desktop
+turn completed. Its marker, native user ID and turn index were already matched;
+only the first 64 characters of its eventual 953-character reply had been collected.
+A single-target read from that same saved cursor returned the remaining 889
+characters and `completionConfirmed: true`. This ruled out a missing model reply
+or an incorrect team label for this incident.
+
+The seven-target worker read reproduced a shared-bridge stall: several initial
+snapshots arrived, then another snapshot and the healthy tasks' confirmation
+snapshots timed out. Only one task returned a usable page. The precise desktop
+condition that stalls the RPC remains unconfirmed; the integration bug was allowing
+that shared failure to repeatedly prevent healthy task completion reconciliation.
+
+`readMany` now retries failed batch snapshots once per task on fresh, isolated
+connections, with the original cursor and unchanged completion guards. Successful
+pages are not replayed. The fallback performs reads only, never prompt sends or
+model changes, and a failed isolated read remains an explicit per-task error.
+
+Live verification recovered six of the seven pages (one task still reported
+`workspace_unavailable`) in about 106 seconds. The incident's original queue head
+advanced to `completed` through `MessageQueue.observe`; no prompt was resent and
+no queued follow-up was dispatched during verification. This validates the reported
+head's recovery, not every native task's health or a maximum model concurrency.
+The deterministic regression reproduces shared-connection poisoning and verifies
+healthy completion, same-task follow-up admission, and no replay of old requests.

@@ -221,14 +221,18 @@ async function parallelLimit(items, limit, action) {
 export async function readMany(args, connect = withRemote) {
   const cursors = args.afterCursors ?? {};
   let list, missing, groups;
-  const results = [], errors = [];
+  const results = [], errors = [], isolatedReads = [];
   async function readGroup(client, group) {
     try { await openWorkspace(client, group[0], list.tasks); }
     catch { errors.push(...group.map(task => ({ taskId: task.taskId, error: "workspace_unavailable" }))); return; }
     const pages = await parallelLimit(group, BATCH_CONCURRENCY, async task => {
       try {
         return await readTaskPage(client, task, { ...args, afterCursor: cursors[task.taskId], maxChars: args.maxChars ?? 3000 });
-      } catch { errors.push({ taskId: task.taskId, error: "snapshot_or_cursor_unavailable" }); return null; }
+      } catch {
+        if (group.length > 1) isolatedReads.push(task);
+        else errors.push({ taskId: task.taskId, error: "snapshot_or_cursor_unavailable" });
+        return null;
+      }
     });
     results.push(...pages.filter(Boolean));
   }
@@ -246,7 +250,11 @@ export async function readMany(args, connect = withRemote) {
   });
   // Reopening a bridge on the same connection stalled in native testing.
   // Switch workspaces by closing first, then connecting; never two terminals at once.
-  for (const group of groups) {
+  // A stalled RPC can poison its shared bridge, including another task's final
+  // confirmation. Retry failed READS once on isolated connections, with the same
+  // cursors and completion checks. Never replay sends or accept a partial result.
+  while (groups.length || isolatedReads.length) {
+    const group = groups.shift() ?? [isolatedReads.shift()];
     try { await connect(client => readGroup(client, group)); }
     catch { errors.push(...group.map(task => ({ taskId: task.taskId, error: "connection_unavailable" }))); }
   }

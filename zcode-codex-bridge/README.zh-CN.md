@@ -47,13 +47,8 @@
 
 ## 安装与绑定
 
-1. 在 ZCode 中把以下目录添加为本地 marketplace：
-
-   ~~~text
-   <repository>/zcode-codex-bridge
-   ~~~
-
-2. 从 marketplace <code>zcode-codex-local</code> 安装 <code>zcode-codex-bridge</code>。
+1. 在 ZCode 打开工作区，进入 **设置 → 插件 → 创建 → 添加插件市场**，输入 <code>WQMYH/Codex-with-Zcode</code> 或仓库 GitHub 地址。
+2. 从 marketplace <code>codex-with-zcode</code> 安装 <code>zcode-codex-bridge</code>。本地开发仍可添加 <code>&lt;repository&gt;/zcode-codex-bridge</code>，使用原有 <code>zcode-codex-local</code> 市场。
 3. 配置 <code>plugin/.zcode-plugin/plugin.json</code> 声明的字段：
 
    - <code>codex_script</code>：已安装的 <code>@openai/codex/bin/codex.js</code>
@@ -67,7 +62,7 @@
 4. 在获得授权的 Codex 任务环境中保存短期桌面宿主绑定：
 
    ~~~text
-   node plugin/scripts/host-client.mjs --configure-host <plugin-data-directory> <official-app-tools-server.mjs> <ISO-expiry>
+   node "<installed-plugin-directory>/scripts/host-client.mjs" --configure-host <plugin-data-directory> <official-app-tools-server.mjs> <ISO-expiry>
    ~~~
 
    该命令需要当前 Codex 桌面环境，只在插件数据目录写入 <code>host-config.json</code>，不会输出管道地址。
@@ -110,7 +105,7 @@ node --check hooks/probe.mjs
 - 活动任务使用 <code>requireIdle: true</code> 时返回 <code>not_idle</code>、<code>sent: false</code>。
 - 直接唤醒 <code>notLoaded</code> 任务通过；原生 Codex 回合只回复 <code>ZCODE_CONFIRM_ONLY</code>，且没有调用工具。
 
-实机证据见 [TEST-RESULTS.md](TEST-RESULTS.md)。全仓库后续工作继续记录在[当前路线图](../README.zh-CN.md#8-路线图与当前计划)中。
+实机证据见 [TEST-RESULTS.md](TEST-RESULTS.md)。全仓库后续工作继续记录在[未来计划](../README.zh-CN.md#未来计划)中。
 
 ## 目录结构
 

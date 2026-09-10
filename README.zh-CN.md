@@ -1,161 +1,173 @@
-[EN](README.md) | [中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-# ZCode Ops
+# Codex with ZCode
 
-ZCode Ops 是 Codex 侧 MCP 插件，用于查看已有的 ZCode Desktop 任务、发送经授权的消息、读取回传并管理持久投递队列。它不会打开新的桌面窗口，也不会创建新任务。
+**一个 Codex，统筹所有智能体。**
 
-## 1. 功能描述
+[![CI](https://github.com/WQMYH/Codex-with-Zcode/actions/workflows/ci.yml/badge.svg)](https://github.com/WQMYH/Codex-with-Zcode/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-43853D.svg)](https://nodejs.org/)
 
-本仓库共同分发两个方向相反、彼此独立的插件：
+让 Codex 成为你的智能体团队指挥台：在一条对话中分派工作、跟进进展、收集结果，并决定下一步。
 
-- 根目录的 `zcode-ops` 运行在 Codex 中，通过 Mobile Remote Control 读取、排队和控制已有的 ZCode Desktop 任务。
-- [`zcode-codex-bridge/`](zcode-codex-bridge/README.zh-CN.md) 运行在 ZCode 中，通过本机官方适配器向一个已绑定的 Codex Desktop 任务发送一次受限固定回报。
+ZCode 是首个接入对象。我们的长期目标，是用统一的任务与消息协作方式，连接不同应用中的智能体。**当前已支持 Codex ↔ ZCode，其他智能体属于后续路线图。**
 
-两者使用不同宿主和清单。只有需要双向协同时才分别安装两个插件。
+[功能](#功能描述) · [安装](#安装方法) · [使用](#使用说明) · [未来计划](#未来计划) · [参与贡献](#参与贡献)
 
-## 2. 运行条件
+## 为什么做这个项目？
 
-- Windows
-- 已启用 Mobile Remote Control 的 ZCode Desktop（实测 3.11.2）
-- 支持本地插件的 Codex Desktop
-- Node.js 24 或更高版本
+智能体之间能够交换任务与结果，才能形成协作团队。Codex with ZCode 通过原生任务数据和持久消息队列，让 Codex 协调已有的 ZCode 对话，不需要接管鼠标或键盘。
 
-Sharing Link 是访问凭据，只保存在本机 `CODEX_HOME/zcode-ops/config.json`，不得进入仓库或安装包。
+你可以继续使用电脑，让 Codex 查看进展、发送下一条指令，再把结果带回当前对话。各应用保留自己的模型账户和执行环境。
 
-## 3. 安装方法
+## 功能描述
 
-### Codex 插件
+- **掌握全局：**查看已有任务、工作区、原生状态和最新回复。
+- **批量分派：**单次向 1–8 条任务发送指令，不同任务的工作可以重叠进行。
+- **保持顺序：**同一任务共用先进先出队列，跨 team 也不会绕过顺序。
+- **收集回传：**在有容量上限的本地收件箱中保留提示词、回复与投递状态。
+- **选择模型与介入：**读取可用模型、为空闲任务切换模型、暂停投递或请求停止。
+- **从 ZCode 回报 Codex：**可选配套插件向绑定的 Codex 任务发送固定回报。
 
-已配置本地 marketplace `gameops-local` 时：
+### 当前支持范围
 
-~~~powershell
-codex plugin add zcode-ops@gameops-local
-~~~
+| 方向 | 插件 | 现有能力 |
+| --- | --- | --- |
+| Codex → ZCode | `zcode-ops` | 查看、发送、收集回复、选择模型和控制已有任务。 |
+| ZCode → Codex | `zcode-codex-bridge` | 查看一个绑定任务的状态，发送预设回报，支持唤醒未加载的任务。 |
+| Codex → 其他智能体 | 计划中 | 从经过验证的宿主接口出发，建立统一协作流程。 |
 
-源码检查：
+ZCode 配套插件按需安装，目前不支持任意内容回传或双方自动循环执行。两侧插件均不负责新建 ZCode 对话。
 
-~~~powershell
-git clone https://github.com/WQMYH/Codex-with-Zcode.git
-Set-Location Codex-with-Zcode
-npm ci --ignore-scripts --registry=https://registry.npmjs.org
-npm run smoke
-~~~
+## 安装方法
 
-克隆只取得源码，不等于完成安装。还需将仓库登记到 Codex 实际使用的本地 marketplace，再安装插件；本仓库目前没有一键公开 marketplace。
+### 环境要求
 
-本地安装更新时，应刷新插件缓存版本，并从实际提供该插件的 marketplace 重新安装。测试前先确认当前加载的工具版本；“已安装的副本”和“当前正在运行的 MCP 进程”是不同状态。
+- **Windows**，已安装 Codex Desktop 与 ZCode Desktop。已验证 ZCode 3.11.2；其他系统与宿主版本尚未验证。
+- **Node.js 24+**，桌面应用可通过 `PATH` 找到。
+- **Git**，以及支持 `codex plugin marketplace add` 的 Codex CLI。
+- 能访问 GitHub；连接时需要 ZCode 提供 **Mobile Remote Control** 功能。
 
-### ZCode 配套插件
+正常安装直接读取 GitHub 仓库，不需要手动克隆源码、构建压缩包、发布到 npm 或下载 GitHub Release。两侧插件的正常入口均使用 Node.js 内置模块，不依赖旧 ACP 诊断所需的依赖包。
 
-在 ZCode 中把以下子目录添加为本地 marketplace，再从 `zcode-codex-local` 安装 `zcode-codex-bridge`：
+### 在 Codex 中安装
 
-~~~text
-<repository>/zcode-codex-bridge
-~~~
+执行：
 
-其临时 Codex 绑定、固定回报契约、`requireIdle` 模式和实机证据见 [Bridge 中文说明](zcode-codex-bridge/README.zh-CN.md)，独立检查记录见 [TEST-RESULTS.md](zcode-codex-bridge/TEST-RESULTS.md)。
+```powershell
+codex plugin marketplace add WQMYH/Codex-with-Zcode
+codex plugin add zcode-ops@codex-with-zcode
+```
 
-## 4. 连接与配置
+随后在 Codex 插件设置中确认 **ZCode Ops** 已启用。
 
-任务需要远程连接时，通过 ZCode Ops 工具保存当前 Sharing Link：
+Codex 会读取仓库中的[市场清单](.agents/plugins/marketplace.json)，定位根目录的插件。Git 市场内部的本地相对路径指向下载下来的仓库，并不要求用户手动克隆。参见[官方 GitHub 市场文档](https://learn.chatgpt.com/docs/enterprise/plugin-management)。
 
-~~~javascript
-zcode_config_set({ sharingLink: "https://zcode.z.ai/remote/v4?..." });
-zcode_config_status({});
-// 明确清除本机凭据：
-zcode_config_set({ sharingLink: null });
-~~~
+### 可选：在 ZCode 中安装
 
-保存链接时不会预先探测连接；后续操作确实连接失败时再更新。安装和启动不会自动索取凭据。
+1. 在 ZCode 打开一个工作区。
+2. 进入 **设置 → 插件 → 创建 → 添加插件市场**。
+3. 输入 `WQMYH/Codex-with-Zcode`，或本仓库的 GitHub 地址。
+4. 从 **codex-with-zcode** 安装 **zcode-codex-bridge**。
 
-## 5. 使用说明
+ZCode 读取根目录的 [marketplace.json](marketplace.json)，与 Codex 使用不同的市场清单，但二者位于同一仓库。[ZCode 官方插件指南](https://zcode.z.ai/cn/docs/plugin)说明了 GitHub 市场安装方式。
 
-默认入口提供 8 个工具：
+随后按照[配套插件绑定指南](zcode-codex-bridge/README.zh-CN.md#安装与绑定)，指定目标 Codex 任务、工作目录，并配置有时效的桌面宿主绑定。
+
+### 连接 ZCode
+
+1. 在 ZCode 打开 **Mobile Remote Control**，复制当前 **Sharing Link**。
+2. 将链接交给 Codex，告诉它：“为 ZCode Ops 保存这个连接。”
+3. 发送：“列出我未归档的 ZCode 任务及当前状态。”
+
+链接保存在源码目录之外的 `CODEX_HOME/zcode-ops/config.json`；未设置 `CODEX_HOME` 时使用 `~/.codex/zcode-ops/config.json`。启动 Codex 时不会弹出链接输入窗口。配置有效仅表示本地检查通过，不代表远端可达。
+
+## 使用说明
+
+直接使用自然语言即可：
+
+> 查看这个项目中的 ZCode 任务。让选中的三个任务汇报进展，然后收集它们的回复。
+
+> 查看这条任务的可用模型，等它空闲后切换为我选定的模型，再发送下一条指令。
+
+> 暂停消息投递。先读取受影响的任务，再决定是否停止当前回合。
+
+Codex 通过 8 个工具完成这些操作：
 
 | 工具 | 用途 |
 | --- | --- |
-| `zcode_tasks` | 列出真实任务、工作区和原生状态。 |
-| `zcode_read` | 读取一条或多条对话，或读取持久收件箱；支持游标续读和有限等待。 |
-| `zcode_send` | 向 1–8 个指定任务入队并返回持久回执。 |
-| `zcode_control` | 暂停或恢复投递、取消未发消息、释放阻塞项，或请求原生停止。 |
-| `zcode_models` | 读取任务公开的模型清单。 |
-| `zcode_set_model` | 为指定空闲任务选择其清单中的模型。 |
-| `zcode_config_status` | 查看脱敏的本地连接配置。 |
-| `zcode_config_set` | 保存 Sharing Link，或用 `null` 清除。 |
+| `zcode_tasks` | 列出任务、工作区和原生状态。 |
+| `zcode_read` | 读取对话或收件箱，使用游标续读或等待。 |
+| `zcode_send` | 向一条或多条已有任务入队发送提示词。 |
+| `zcode_control` | 暂停/恢复投递、管理回执，或请求停止。 |
+| `zcode_models` | 读取任务提供的模型清单。 |
+| `zcode_set_model` | 为空闲任务选择清单中的模型。 |
+| `zcode_config_status` | 检查已保存配置，不暴露链接。 |
+| `zcode_config_set` | 保存或清除 Sharing Link。 |
 
-典型读取和发送流程：
+自动化调用中，同一次发送重试应沿用原 `requestId`。队列后台独立采集回复，Codex 通过 `zcode_read` 读取；持续监督需要另行配置定时任务，安装本身不会监控所有对话。
 
-~~~javascript
-zcode_tasks({});
-const page = zcode_read({ taskIds: [taskId] });
-zcode_read({ taskIds: [taskId], cursor: page.cursor, waitMs: 30000 });
-zcode_send({ requestId: "review-round-1", taskIds: [taskId],
-  teamId: "review-team", prompt: "请回传当前进展，不修改文件。" });
-const inbox = zcode_read({ view: "inbox", teamId: "review-team" });
-zcode_read({ view: "inbox", teamId: "review-team", cursor: inbox.cursor });
-~~~
+参数、team、游标、接收确认和恢复方式见[队列指南](docs/message-queue.md)。
 
-这些是工具调用示例，不是独立 JavaScript SDK。任务 ID 必须来自 `zcode_tasks`；续读游标时必须保持相同过滤器。一次最多读取 8 个任务。`hasMore`、`historyGap`、`errors` 和 `missing` 都是有效结果，不能据此直接断言任务已停止。
+## 可靠性与隐私
 
-对话读取每任务每页最多 3,000 个字符，`messageLimit` 默认 100、最大 500。`tailCursor` 明确跳过历史。正文按原生消息 ID 和 `contentOffset` 拼接；`replace: true` 会替换旧正文。续读锚点缺失时返回 `historyGap`，这本身不表示任务中断。
+- **投递不等于验收。**原生 `completed` 表示回合结束，不代表工作通过审阅。
+- **未知发送不重放。**恢复前先读取对话，不要为了重发而更换请求 ID。
+- **隔离读取故障。**批量读取失败时，每个受影响任务使用新连接独立核验一次，保留原游标与完成检查；绝不因此重试发送。
+- **限制资源占用。**所有 team 共用一个队列和远程连接，最多 100 条未解决消息、500 条完整记录，数据库及事务日志总预算为 20 MB。
+- **暂停影响全局。**暂停投递作用于所有 team；停止某个模型回合不会取消其后续排队消息。
+- **凭据保留在本地。**Sharing Link、桌面宿主绑定和收件箱可能暴露任务内容，不要放入公开 Issue、截图或 Git 提交。
 
-同一工作区最多并发取得 4 个快照，跨工作区依次切换；一个 Sharing Link 仍然只有一个物理连接。多个 team 共用每轮最多 8 个任务的公平轮转和全局 100 条未解决消息上限，team 不拥有单独的并发池。
+模型并发能力取决于 ZCode 和服务商。远程读写共用一条连接，不承诺无限并行执行。插件沿用目标应用的既有账户与权限，不提供模型额度。
 
-多个插件进程通过 SQLite 票据协调远程访问，等待上限 30 秒，并支持崩溃回收。全局 pause/resume 必须传 `scope: "all"`，并把最新的 `worker.controlRevision` 作为 `expectedRevision` 传入；过期 revision 会被拒绝。
+这是独立社区项目，并非 OpenAI 或 Z.ai 官方产品。桌面接口可能随宿主更新而变化。
 
-### 队列与状态契约
+## 常见问题
 
-- 单条和批量发送共用一个持久队列。同一任务保持顺序，不同任务可独立推进。
-- worker 按需启动，无可处理工作时退出；team 只是分组标签，不是独立并发池。
-- 队列最多保留 500 条完整记录，并限制事务存储总量；只有已确认的终态记录才允许清理正文。
-- 发送回执、观察到回复、原生回合完成和业务验收是不同状态。未知投递不会自动重试。
-- 显式暂停会持久保留；暂停时发送只会入队，不会自动恢复 worker。
-- 原生停止请求只停止当前回合，不取消队列；若后续消息也不能投递，应先暂停。
-- 插件不会杀进程、批准权限、修改 ZCode 数据库，也不会唤醒任意 Codex 任务。
+| 问题 | 处理方式 |
+| --- | --- |
+| 插件无法启动 | 确认 `node --version` 为 24+，且桌面应用的 `PATH` 可找到 Node；更改环境后重启应用。 |
+| 找不到市场或插件 | 检查 GitHub 访问并刷新市场，确认添加的是仓库地址，而非插件子目录。 |
+| 无法连接 ZCode | 保持 ZCode 与 Mobile Remote Control 开启，检查网络；必要时提供当前 Sharing Link。 |
+| 消息一直排队 | 检查暂停状态、待处理输入，以及前一条消息的投递状态。 |
+| 原生任务完成，收件箱未完成 | 更新插件并核对两个视图；独立读取仍失败时，保留消息 ID 并提交脱敏诊断，不要重发。 |
+| 重启 Codex 后配套插件失效 | 重新创建有时效的桌面宿主绑定。 |
 
-已授权且尚未发送的队首消息，可以从原生 `error` 或 `failed` 状态继续，不改变模型或消息 ID。已经发送但失败的消息保留记录，必须由协调者核实后再释放。运行中、已取消、已中断、已归档或等待交互的任务继续等待。
+## 开发
 
-需要收件箱保留保护时，使用稳定的 `consumerId`，并在完整读取 envelope 后再确认。服务端会拒绝跳页和提前确认；所有已登记读取者都确认后才允许容量清理。未传 `consumerId` 的旁观读取不取得保留权。
+本地开发时执行：
 
-## 6. 状态与安全边界
-
-Sharing Link、管道地址、宿主绑定、回执和 Hook 样本只保存在本机数据目录，不得提交、打包或复制到提示词中。克隆仓库不等于已经配置连接。
-
-Codex 插件和 ZCode Bridge 使用不同清单及宿主。不要把 Bridge MCP 服务并入 Codex 插件的 `.mcp.json`；需要双向能力时分别安装。
-
-队列最多保留 500 条完整记录。主数据库约 9 MB 上限，并在约 7 MB 时开始清理符合条件的内容，为日志和事务文件保留空间，使总预算不超过 20 MB。无法安全回收空间时，系统会拒绝入队或暂停采集，而不会删除未解决数据。去重残留记录至少保留 7 天。
-
-`stop_task` 只请求取消原生回合，不取消队列；若后续消息也不能发送，应先暂停投递。插件不会自动打断任务、批准权限、修改 ZCode 数据库或杀进程。
-
-## 7. 验证与维护
-
-在仓库根目录运行 Codex 侧检查：
-
-~~~powershell
+```powershell
+git clone https://github.com/WQMYH/Codex-with-Zcode.git
+cd Codex-with-Zcode
+npm ci --ignore-scripts
 npm run smoke
-~~~
+npm --prefix zcode-codex-bridge/plugin test
+```
 
-独立运行 Bridge 检查：
+两侧市场也都接受本地源码目录，便于开发调试。Codex 与 ZCode 会缓存已安装插件：修改后需刷新来源、更新或重装插件。只更新 Git，不会替换已运行的后台进程。
 
-~~~powershell
-Set-Location zcode-codex-bridge/plugin
-npm test
-~~~
+[CI](.github/workflows/ci.yml) 在 push 和 pull request 时，通过 Windows / Node.js 24 运行已有离线测试。测试使用临时数据和模拟连接，不需要账户、Sharing Link 或模型额度；桌面端到端验证另行进行。
 
-两个测试集都通过，才算共同分发检查完成。实机测试只限明确选择的任务；发送被接受不等于原生已收到、已经完成或通过业务验收。
+进一步了解：[队列契约](docs/message-queue.md) · [协议证据](docs/zcode-remote-protocol.md) · [配套插件指南](zcode-codex-bridge/README.zh-CN.md) · [配套插件测试记录](zcode-codex-bridge/TEST-RESULTS.md)
 
-需要显式检查已安装插件时，只能针对选定测试任务和稳定批次 ID 运行 `scripts/live-concurrency.mjs`。它会检查同目标 FIFO、重复 request ID、读取和多读取者确认，并在结束后恢复最初的暂停状态。它不证明两个不同目标在同时运行模型；未知发送不得自动重跑。
+## 未来计划
 
-旧 ACP 入口保留在 `scripts/legacy-gateway.mjs`，仅供主动诊断，不在默认插件中注册。旧游标不能替代 `zcode_read` 游标。
+- [x] 从 Codex 协调已有 ZCode 任务。
+- [x] 持久队列、批量派发、有界保留与完成采集。
+- [x] ZCode 配套插件向绑定的 Codex 任务回报。
+- [ ] 更丰富的 ZCode → Codex 消息与更简单的绑定方式。
+- [ ] 事件驱动通知和更多桌面版本的兼容验证。
+- [ ] 接入更多智能体，让一个 Codex 协调跨应用团队。
 
-## 8. 路线图与当前计划
+更多智能体支持是发展方向，不是当前兼容性承诺。尤其欢迎带来可验证宿主接口的贡献。
 
-1. 验证更可靠的原生回合结束关联，减少对助手正文存在的依赖；取得证据前不降低完成判据。
-2. 提供独立的公开 marketplace 安装入口。
-3. 官方可验证的新建任务接口出现前，仅控制已有任务；当前集成稳定后再评估其他桌面智能体。
+## 参与贡献
 
-## 9. 文档
+项目由 [WQMYH](https://github.com/WQMYH) 维护，欢迎提交 [Issue](https://github.com/WQMYH/Codex-with-Zcode/issues) 和 Pull Request。
 
-- 队列说明：[docs/message-queue.md](docs/message-queue.md)
-- 原生协议记录：[docs/zcode-remote-protocol.md](docs/zcode-remote-protocol.md)
-- Bridge 实机证据：[zcode-codex-bridge/TEST-RESULTS.md](zcode-codex-bridge/TEST-RESULTS.md)
+报告问题时，请提供插件提交号、桌面版本、复现步骤及脱敏诊断。提交修改时保持范围集中，并运行两侧测试。请勿提交凭据或私密对话内容。
+
+## 许可证
+
+采用 [Apache License 2.0](LICENSE)。第三方来源与许可保留在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

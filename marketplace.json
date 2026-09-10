@@ -1,0 +1,14 @@
+{
+  "name": "codex-with-zcode",
+  "description": "One Codex to orchestrate every agent, starting with ZCode.",
+  "plugins": [
+    {
+      "name": "zcode-codex-bridge",
+      "source": "./zcode-codex-bridge/plugin",
+      "description": "Return a bounded report from ZCode to a bound Codex task.",
+      "version": "0.2.4",
+      "category": "developer-tools",
+      "strict": true
+    }
+  ]
+}

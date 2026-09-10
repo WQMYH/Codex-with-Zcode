@@ -1,161 +1,173 @@
-[EN](README.md) | [中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-# ZCode Ops
+# Codex with ZCode
 
-ZCode Ops is the Codex-side MCP plugin for inspecting existing ZCode Desktop tasks, sending authorized messages, reading replies, and managing a durable delivery queue. It does not open a new desktop window or create a new task.
+**One Codex to orchestrate every agent.**
 
-## 1. Overview
+[![CI](https://github.com/WQMYH/Codex-with-Zcode/actions/workflows/ci.yml/badge.svg)](https://github.com/WQMYH/Codex-with-Zcode/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-43853D.svg)](https://nodejs.org/)
 
-This repository distributes two independent plugins for opposite sides of the same workflow:
+Turn Codex into the command center for your agent team: delegate work, follow progress, collect results, and decide what happens next from one conversation.
 
-- `zcode-ops/` at the repository root is the Codex plugin. It reads, queues, and controls existing ZCode Desktop tasks through Mobile Remote Control.
-- [`zcode-codex-bridge/`](zcode-codex-bridge/README.md) is the ZCode plugin. It sends one bounded, fixed report to a configured Codex Desktop task through the official local adapter.
+ZCode is the first integration. The long-term goal is to coordinate agents across applications through a common task-and-message workflow. **Today, this repository supports Codex ↔ ZCode; other agents are on the roadmap.**
 
-Keep their manifests and runtime boundaries separate. Install both only when a workflow needs two-way coordination.
+[Features](#features) · [Installation](#installation) · [Usage](#usage) · [Roadmap](#roadmap) · [Contributing](#contributing)
 
-## 2. Requirements
+## Why this project?
 
-- Windows
-- ZCode Desktop with Mobile Remote Control enabled (tested with ZCode 3.11.2)
-- Codex Desktop with local plugin support
-- Node.js 24 or newer
+An agent team is more useful when its members can share work. Codex with ZCode lets Codex coordinate existing ZCode conversations using native task data and a persistent message queue—without taking over your mouse or keyboard.
 
-The Sharing Link is an access credential. It is stored only in the local `CODEX_HOME/zcode-ops/config.json`; it is never part of this repository or an install package.
+Keep working on your computer while Codex checks progress, sends the next instruction, and brings the results back into your conversation. Each application keeps its own model account and execution environment.
 
-## 3. Installation
+## Features
 
-### Codex plugin
+- **See the team:** list existing tasks, workspaces, native status, and recent replies.
+- **Delegate in batches:** send to 1–8 tasks per call; work on different tasks can overlap.
+- **Keep work ordered:** messages to the same task share one FIFO queue, even across teams.
+- **Collect results:** preserve prompts, replies, and delivery state in a bounded local inbox.
+- **Choose models and intervene:** inspect advertised models, switch idle tasks, pause delivery, or request a native stop.
+- **Receive a report in Codex:** the optional ZCode companion sends a fixed report to a bound Codex task.
 
-If the local marketplace `gameops-local` is already configured:
+### Current support
 
-~~~powershell
-codex plugin add zcode-ops@gameops-local
-~~~
+| Direction | Plugin | Available now |
+| --- | --- | --- |
+| Codex → ZCode | `zcode-ops` | Inspect, send, collect replies, select models, and control existing tasks. |
+| ZCode → Codex | `zcode-codex-bridge` | Read one bound task's status and send a predefined report, including waking an unloaded task. |
+| Codex → other agents | Planned | A shared coordination workflow, starting from verified host interfaces. |
 
-To inspect the source:
+The ZCode companion is optional. It does not yet support arbitrary return prompts or automatic back-and-forth execution. Neither plugin creates ZCode conversations.
 
-~~~powershell
-git clone https://github.com/WQMYH/Codex-with-Zcode.git
-Set-Location Codex-with-Zcode
-npm ci --ignore-scripts --registry=https://registry.npmjs.org
-npm run smoke
-~~~
+## Installation
 
-A clone is source code, not an installation. Register the repository in the local marketplace used by your Codex installation, then install the plugin. This repository does not currently provide a one-click public marketplace.
+### Requirements
 
-When updating a local installation, refresh the plugin cache version and reinstall from the marketplace that actually serves it. Confirm the active tool version before testing; an installed copy and the currently loaded MCP process are separate states.
+- **Windows**, with Codex Desktop and ZCode Desktop installed. ZCode 3.11.2 has been tested; other operating systems and host versions are not yet verified.
+- **Node.js 24+** on the desktop applications' `PATH`.
+- **Git** and a Codex CLI that supports `codex plugin marketplace add`.
+- Access to GitHub. ZCode's **Mobile Remote Control** must be available for the connection step.
 
-### ZCode companion plugin
+Normal installation reads this GitHub repository. You do not need to clone the source, build an archive, publish to npm, or download a GitHub Release. Both plugin entry points use Node.js built-ins; the legacy ACP dependencies are not required for normal use.
 
-In ZCode, add the repository subdirectory below as a local marketplace and install `zcode-codex-bridge` from `zcode-codex-local`:
+### Install in Codex
 
-~~~text
-<repository>/zcode-codex-bridge
-~~~
+Run:
 
-Follow the companion [README](zcode-codex-bridge/README.md) for its expiring Codex binding, fixed reply contract, `requireIdle` mode, and live evidence. Its independent checks are in [TEST-RESULTS.md](zcode-codex-bridge/TEST-RESULTS.md).
+```powershell
+codex plugin marketplace add WQMYH/Codex-with-Zcode
+codex plugin add zcode-ops@codex-with-zcode
+```
 
-## 4. Connection and configuration
+Then check that **ZCode Ops** is enabled in Codex's plugin settings.
 
-When a task needs the remote connection, provide the current Sharing Link through the ZCode Ops tools:
+Codex discovers the repository's [marketplace manifest](.agents/plugins/marketplace.json), which points to the plugin at the repository root. A local source path *inside a Git marketplace* does not require a manual local checkout. See the [official GitHub marketplace documentation](https://learn.chatgpt.com/docs/enterprise/plugin-management).
 
-~~~javascript
-zcode_config_set({ sharingLink: "https://zcode.z.ai/remote/v4?..." });
-zcode_config_status({});
-// Explicitly clear the local credential:
-zcode_config_set({ sharingLink: null });
-~~~
+### Optional: install in ZCode
 
-Saving a link does not probe it. A connection is attempted only when a later operation needs it; update the link after an actual connection failure. Installation and startup do not request credentials automatically.
+1. Open a workspace in ZCode.
+2. Go to **Settings → Plugins → Create → Add marketplace**.
+3. Enter `WQMYH/Codex-with-Zcode` or this repository's GitHub URL.
+4. Install **zcode-codex-bridge** from **codex-with-zcode**.
 
-## 5. Usage
+ZCode discovers the root [marketplace.json](marketplace.json). This is a separate manifest from Codex's, in the same repository. The [official ZCode plugin guide](https://zcode.z.ai/en/docs/plugin) documents GitHub marketplace installation.
 
-The default entry point exposes eight tools:
+Continue with the [companion binding guide](zcode-codex-bridge/README.md#install-and-bind) to select the destination Codex task, working directory, and expiring desktop-host binding.
+
+### Connect ZCode
+
+1. In ZCode, open **Mobile Remote Control** and copy the current **Sharing Link**.
+2. Give it to Codex and ask: “Save this connection for ZCode Ops.”
+3. Ask: “List my unarchived ZCode tasks and their current status.”
+
+The link is saved outside the checkout at `CODEX_HOME/zcode-ops/config.json`, or `~/.codex/zcode-ops/config.json` when `CODEX_HOME` is unset. There is no link prompt at Codex startup. Configuration validity is a local check, not proof that ZCode is reachable.
+
+## Usage
+
+Start with natural-language instructions:
+
+> Show the ZCode tasks in this project. Ask the three tasks I select to report their progress, then collect their replies.
+
+> Show this task's available models. When it is idle, switch it to the model I select and send my next instruction.
+
+> Pause message delivery. Read the affected task before deciding whether to stop its current turn.
+
+Codex uses eight tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `zcode_tasks` | List real tasks, workspaces, and native status. |
-| `zcode_read` | Read one or more conversations or the durable inbox, with cursor-based continuation and bounded waiting. |
-| `zcode_send` | Enqueue an authorized prompt for 1–8 selected tasks and return a durable receipt. |
-| `zcode_control` | Pause or resume delivery, cancel unsent messages, release a blocked item, or request a native stop. |
-| `zcode_models` | Read the models advertised by a task. |
+| `zcode_tasks` | List tasks, workspaces, and native status. |
+| `zcode_read` | Read conversations or the inbox; continue or wait with a cursor. |
+| `zcode_send` | Queue a prompt for one or more existing tasks. |
+| `zcode_control` | Pause/resume delivery, manage receipts, or request a stop. |
+| `zcode_models` | List models advertised for a task. |
 | `zcode_set_model` | Select an advertised model for an idle task. |
-| `zcode_config_status` | Show redacted local connection configuration. |
-| `zcode_config_set` | Save a Sharing Link or clear it with `null`. |
+| `zcode_config_status` | Check saved configuration without revealing the link. |
+| `zcode_config_set` | Save or clear the Sharing Link. |
 
-Typical read/send flow:
+For automation, keep the same `requestId` when retrying the same send request. The queue worker collects replies independently of the Codex conversation; Codex retrieves them with `zcode_read`. Continuous supervision requires a separately configured scheduled task. Installation alone does not monitor every conversation.
 
-~~~javascript
-zcode_tasks({});
-const page = zcode_read({ taskIds: [taskId] });
-zcode_read({ taskIds: [taskId], cursor: page.cursor, waitMs: 30000 });
-zcode_send({ requestId: "review-round-1", taskIds: [taskId],
-  teamId: "review-team", prompt: "Please report current progress without changing files." });
-const inbox = zcode_read({ view: "inbox", teamId: "review-team" });
-zcode_read({ view: "inbox", teamId: "review-team", cursor: inbox.cursor });
-~~~
+See the [queue guide](docs/message-queue.md) for parameters, teams, cursors, acknowledgements, and recovery.
 
-These are tool-call examples, not a standalone JavaScript SDK. Task IDs must come from `zcode_tasks`; use the same filters when continuing a cursor. Up to eight tasks can be read in one call. `hasMore`, `historyGap`, `errors`, and `missing` are meaningful results, not proof that a task stopped.
+## Reliability and privacy
 
-Conversation reads accept up to eight tasks, 3,000 characters per task per page, and a `messageLimit` of 100 by default or 500 at most. `tailCursor` explicitly skips history. Message bodies are assembled by native message ID and `contentOffset`; `replace: true` replaces earlier text. A missing continuation anchor sets `historyGap` and does not by itself mean the task stopped.
+- **Delivery is not acceptance.** Native `completed` means a turn ended, not that its work passed review.
+- **Uncertain sends are not replayed.** Inspect the conversation before recovery; never change a request ID just to resend.
+- **Read failures are isolated.** Failed batch reads get one fresh-connection check per affected task, with the original cursor and completion checks. This never retries a send.
+- **Resources are bounded.** All teams share one queue and remote connection: up to 100 unresolved messages, 500 full records, and a 20 MB database-and-journal budget.
+- **Pause is global.** It affects every team. Stopping one model turn does not cancel its queued follow-ups.
+- **Credentials stay local.** Sharing Links, desktop-host bindings, and inbox contents can expose your tasks. Do not post them in issues, screenshots, or Git commits.
 
-At most four workspace snapshots run concurrently inside one workspace; workspace switches remain sequential. A single Sharing Link is still one physical connection. Teams share the same fair rotation of up to eight tasks per worker cycle and the global limit of 100 unresolved messages; a team does not receive its own concurrency pool.
+Model concurrency depends on ZCode and its provider. Remote reads and writes share a connection; this is not a promise of unlimited parallel model execution. The plugins use the target application's existing account and permissions and do not provide model credits.
 
-Plugin processes coordinate remote access through SQLite tickets with a 30-second wait bound and crash recovery. Global pause/resume requires `scope: "all"` and the latest `worker.controlRevision` passed as `expectedRevision`; stale revisions are rejected.
+This is an independent community project, not an official OpenAI or Z.ai product. Desktop interfaces can change with host updates.
 
-### Queue and state contract
+## Troubleshooting
 
-- Single and batch sends share one persistent queue. Messages for one task remain ordered; different tasks can progress independently.
-- The worker starts on demand and exits when there is no work to process. A team is a grouping label, not an independent concurrency pool.
-- The queue retains at most 500 complete records and keeps the total transaction storage within its bounded budget. Only confirmed terminal records may have their bodies cleaned.
-- A send receipt, an observed reply, native turn completion, and business acceptance are separate states. Unknown delivery is never automatically retried.
-- Explicit pause persists. Sending while paused only queues work; it does not resume the worker.
-- A native stop request stops the current turn but does not cancel queued messages. Pause first when later delivery must also stop.
-- The plugin does not kill processes, approve permissions, modify the ZCode database, or wake arbitrary Codex tasks.
+| Problem | Next step |
+| --- | --- |
+| Plugin cannot start | Check `node --version` is 24+ and Node is on the desktop application's `PATH`; restart the app after changing its environment. |
+| Marketplace or plugin is missing | Check GitHub access and refresh the marketplace. Ensure you added the repository, not a plugin subdirectory. |
+| ZCode cannot be reached | Keep ZCode and Mobile Remote Control open, check network access, and supply the current Sharing Link if necessary. |
+| A message stays queued | Check pause state, pending input, and the preceding message's delivery state. |
+| Native task completed but the inbox did not | Update the plugin and inspect both views. If an isolated read still fails, retain the message ID and report redacted diagnostics; do not resend. |
+| Companion fails after restarting Codex | Recreate its expiring desktop-host binding. |
 
-The worker may continue an authorized, unsent head message from a native `error` or `failed` task without changing its model or message ID. Already-sent failures remain recorded and require coordinator review before release. Running, cancelled, interrupted, archived, or interaction-blocked tasks continue waiting.
+## Development
 
-For inbox retention, use a stable `consumerId` and acknowledge only after the full envelope has been read. The server rejects skipped pages and premature acknowledgements. Every registered reader must acknowledge independently before capacity cleanup; observer reads without a `consumerId` do not acquire retention rights.
+For local changes:
 
-## 6. Status and security boundaries
-
-Sharing Links, pipe addresses, host bindings, receipts, and Hook samples remain in local data directories. They must not be committed, packaged, or copied into prompts. A repository clone is not a configured connection.
-
-The Codex plugin and the ZCode bridge use different manifests and hosts. Do not merge the bridge MCP server into the Codex plugin's `.mcp.json`; install the two packages separately when two-way behavior is required.
-
-The queue keeps at most 500 complete records. The primary database is bounded around 9 MB and begins eligible cleanup around 7 MB so journals and transaction files remain within the 20 MB total budget. If space cannot be recovered safely, enqueueing or collection stops instead of deleting unresolved data. Deduplication tombstones remain for at least seven days.
-
-`stop_task` requests native turn cancellation only; it does not cancel the queue. Pause delivery first when later messages must not be sent. The plugin does not automatically interrupt tasks, approve permissions, modify the ZCode database, or kill processes.
-
-## 7. Verification and maintenance
-
-Run the Codex-side checks from the repository root:
-
-~~~powershell
+```powershell
+git clone https://github.com/WQMYH/Codex-with-Zcode.git
+cd Codex-with-Zcode
+npm ci --ignore-scripts
 npm run smoke
-~~~
+npm --prefix zcode-codex-bridge/plugin test
+```
 
-Run the companion checks independently:
+Both marketplaces also accept the checkout's local directory for development. Codex and ZCode cache installed plugins: refresh the source and update/reinstall the plugin after code changes. Updating Git alone does not update an already-running worker.
 
-~~~powershell
-Set-Location zcode-codex-bridge/plugin
-npm test
-~~~
+[CI](.github/workflows/ci.yml) runs the existing offline suites on Windows / Node.js 24 for pushes and pull requests. They use temporary data and simulated transports, without accounts, Sharing Links, or model credits. Desktop end-to-end verification is separate.
 
-The joint-distribution check is complete only when both suites pass. Live tests remain bounded to explicitly selected tasks; an accepted send is not by itself proof of native receipt, completion, or business acceptance.
+Further reading: [queue contract](docs/message-queue.md) · [protocol evidence](docs/zcode-remote-protocol.md) · [companion guide](zcode-codex-bridge/README.md) · [companion test record](zcode-codex-bridge/TEST-RESULTS.md)
 
-For an explicit installed-plugin check, run `scripts/live-concurrency.mjs` only against the selected test task and a stable batch ID. It verifies same-target FIFO, duplicate request IDs, reads, and multi-reader acknowledgement, then restores the initial pause state. It does not prove that two different targets run models concurrently, and an uncertain send must not be rerun automatically.
+## Roadmap
 
-The legacy ACP entry point remains in `scripts/legacy-gateway.mjs` for deliberate diagnosis only. It is not registered by the default plugin, and legacy cursors cannot replace `zcode_read` cursors.
+- [x] Coordinate existing ZCode tasks from Codex.
+- [x] Persistent queues, batch dispatch, bounded retention, and completion collection.
+- [x] A ZCode companion for reports to a bound Codex task.
+- [ ] Richer ZCode-to-Codex messages and simpler binding.
+- [ ] Event-driven notifications and more desktop compatibility checks.
+- [ ] Adapters for more agents—one Codex coordinating a cross-application team.
 
-## 8. Roadmap and current plans
+Broader agent support is the direction, not a claim of current compatibility. Contributions that establish a working host interface are especially welcome.
 
-1. Validate stronger native turn-completion correlation and reduce dependence on assistant-body presence; do not weaken completion criteria before that evidence exists.
-2. Provide a standalone public marketplace installation path.
-3. Continue controlling existing tasks only until an officially verifiable create-task interface exists; evaluate additional desktop agents after the current integration remains stable.
+## Contributing
 
-## 9. Documentation
+Maintained by [WQMYH](https://github.com/WQMYH). [Issues](https://github.com/WQMYH/Codex-with-Zcode/issues) and pull requests are welcome.
 
-- Queue details: [docs/message-queue.md](docs/message-queue.md)
-- Native protocol notes: [docs/zcode-remote-protocol.md](docs/zcode-remote-protocol.md)
-- Companion evidence: [zcode-codex-bridge/TEST-RESULTS.md](zcode-codex-bridge/TEST-RESULTS.md)
+For bugs, include the plugin commit, desktop versions, steps to reproduce, and redacted diagnostics. For changes, keep the scope focused and run both test suites. Do not include credentials or private conversation contents.
+
+## License
+
+[Apache License 2.0](LICENSE). Third-party attributions and licenses are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

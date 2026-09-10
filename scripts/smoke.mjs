@@ -4,6 +4,17 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { publicTools } from "./tools.mjs";
 
+const manifest = path => JSON.parse(readFileSync(path, "utf8"));
+const codexMarket = manifest(".agents/plugins/marketplace.json"), zcodeMarket = manifest("marketplace.json");
+assert.equal(codexMarket.name, "codex-with-zcode");
+assert.equal(zcodeMarket.name, codexMarket.name);
+assert.deepEqual(codexMarket.plugins[0].source, { source: "local", path: "./" });
+assert.equal(codexMarket.plugins[0].name, manifest(".codex-plugin/plugin.json").name);
+const companion = zcodeMarket.plugins[0];
+assert.equal(companion.source, "./zcode-codex-bridge/plugin");
+assert.equal(companion.name, manifest(companion.source + "/.zcode-plugin/plugin.json").name);
+assert.equal(companion.version, manifest(companion.source + "/.zcode-plugin/plugin.json").version);
+
 // These checks temporarily override process.env; do not evaluate them concurrently.
 await import("./remote.test.mjs");
 await import("./queue.test.mjs");
