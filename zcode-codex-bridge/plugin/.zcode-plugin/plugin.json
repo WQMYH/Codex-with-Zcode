@@ -1,0 +1,48 @@
+{
+  "name": "zcode-codex-bridge",
+  "version": "0.2.4",
+  "description": "Bounded read and fixed-reply test for one existing Codex task",
+  "author": { "name": "Local development" },
+  "license": "UNLICENSED",
+  "skills": "skills",
+  "userConfig": {
+    "codex_script": {
+      "type": "file",
+      "title": "Codex CLI JavaScript entrypoint",
+      "description": "Absolute path to @openai/codex/bin/codex.js",
+      "required": true
+    },
+    "codex_thread_id": {
+      "type": "string",
+      "title": "Bound Codex task ID",
+      "required": true
+    },
+    "codex_cwd": {
+      "type": "directory",
+      "title": "Bound Codex task directory",
+      "required": true
+    },
+    "source_session_id": {
+      "type": "string",
+      "title": "Source ZCode session ID",
+      "description": "Provenance label; current MCP transport does not authenticate the calling session",
+      "required": true
+    },
+    "team_id": {
+      "type": "string",
+      "title": "Team label",
+      "default": "zcode-codex-poc"
+    },
+    "binding_expires_at": {
+      "type": "string",
+      "title": "Binding expiry",
+      "description": "ISO-8601 timestamp",
+      "required": true
+    },
+    "expected_reply": {
+      "type": "string",
+      "title": "Fixed reply token",
+      "default": "ZCODE_CODEX_RETURN_OK"
+    }
+  }
+}

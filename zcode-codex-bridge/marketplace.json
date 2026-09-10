@@ -1,0 +1,14 @@
+{
+  "name": "zcode-codex-local",
+  "description": "Local bounded ZCode to Codex integration candidates",
+  "plugins": [
+    {
+      "name": "zcode-codex-bridge",
+      "source": "./plugin",
+      "description": "Bounded read and fixed-reply test for one existing Codex task",
+      "version": "0.2.4",
+      "category": "developer-tools",
+      "strict": true
+    }
+  ]
+}

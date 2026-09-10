@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "codex-bridge": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${ZCODE_PLUGIN_ROOT}/scripts/server.mjs"],
+      "env": {
+        "ZCODE_PLUGIN_DATA": "${ZCODE_PLUGIN_DATA}",
+        "ZCC_CODEX_SCRIPT": "${user_config.codex_script}",
+        "ZCC_CODEX_THREAD_ID": "${user_config.codex_thread_id}",
+        "ZCC_CODEX_CWD": "${user_config.codex_cwd}",
+        "ZCC_SOURCE_SESSION_ID": "${user_config.source_session_id}",
+        "ZCC_TEAM_ID": "${user_config.team_id}",
+        "ZCC_BINDING_EXPIRES_AT": "${user_config.binding_expires_at}",
+        "ZCC_EXPECTED_REPLY": "${user_config.expected_reply}"
+      },
+      "enabled": true,
+      "timeoutMs": 120000
+    }
+  }
+}

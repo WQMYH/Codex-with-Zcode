@@ -36,6 +36,25 @@ npm run smoke
 源码使用者还需将仓库登记到自己的本地 marketplace，再安装插件。当前没有随仓库分发的独立公开 marketplace；克隆不等于安装。
 开发更新需要刷新插件缓存版本并重新安装，但不必一律重开 Codex 任务。先核对实际调用的工具版本；如果当前内置入口仍连接旧进程，可在同一任务内用已安装目录的 `scripts/remote-call.mjs` 启动新版 MCP。原地刷新或新开任务是另一种加载方式，不能把“已安装”直接当作“当前入口已更新”。
 
+## 3.1 共同分发：Codex ↔ ZCode
+
+本仓库同时提供两个保持独立的插件：
+
+- 根目录的 `zcode-ops` 是 Codex 插件，负责读取、排队和控制已有的 ZCode Desktop 任务。
+- [`zcode-codex-bridge/`](zcode-codex-bridge/README.md) 是 ZCode 插件，负责通过本机官方适配器向一个已绑定的 Codex Desktop 任务发送受限固定回报。
+
+两者运行在相反的一侧，不能把其中一方的 MCP 清单并入另一方。需要双向能力时，分别安装两个插件；Bridge 的本地 marketplace 目录就是 `zcode-codex-bridge/`。Bridge 的安装、绑定、`requireIdle` 行为和实机证据见其 README 与 [TEST-RESULTS.md](zcode-codex-bridge/TEST-RESULTS.md)。
+
+联合检查：
+
+```powershell
+npm run smoke
+Set-Location zcode-codex-bridge/plugin
+npm test
+```
+
+Sharing Link、桌面管道地址、宿主绑定、发送回执和 Hook 样本只保存在各自本机数据目录，不进入仓库或安装包。
+
 ## 4. 连接与配置
 
 在需要使用时把当前链接交给 Codex：
