@@ -145,6 +145,26 @@ try {
   assert.equal(queue.get(competingMessageId).state, "needs_attention");
   assert.equal(competingView.events.some(event => event.kind === "native_execution_failed"), false);
   assert.equal(Object.hasOwn(competingView.envelopes[0], "nativeExecutionFailure"), false);
+  const pagedTaskId = "sess_failure-paged", pagedMessageId = queue.enqueue({ requestId: "failure-paged",
+    taskIds: [pagedTaskId], prompt: "work" }).messages[0].messageId;
+  queue.state(queue.get(pagedMessageId), "acknowledged");
+  const pagedTask = normalizeTask({ taskId: pagedTaskId, workspacePath: "workspace", displayStatus: "error",
+    lastError: { code: "1308" } });
+  const pagedSnapshot = { messages: [
+    { id: "user-paged-marker", role: "user", turnIndex: 1, content: marker(pagedMessageId) + "\nwork" },
+    { id: "user-paged-manual", role: "user", turnIndex: 2, content: "manual" },
+    { id: "assistant-paged-manual", role: "assistant", turnIndex: 2, content: "" }
+  ] };
+  const firstPage = messagePage(pagedSnapshot, pagedTask, { maxChars: marker(pagedMessageId).length + 5 });
+  assert(firstPage.hasMore && firstPage.messages.some(message => message.id === "user-paged-marker"));
+  queue.observe(queue.get(pagedMessageId), { task: pagedTask, ...firstPage });
+  assert.equal(queue.get(pagedMessageId).state, "acknowledged", "A partial failed snapshot must continue paging");
+  const finalPage = messagePage(pagedSnapshot, pagedTask, { afterCursor: firstPage.cursor });
+  queue.observe(queue.get(pagedMessageId), { task: pagedTask, ...finalPage });
+  const pagedView = queue.read({ taskId: pagedTaskId, limit: 20 });
+  assert.equal(queue.get(pagedMessageId).state, "needs_attention");
+  assert.equal(pagedView.events.some(event => event.kind === "native_execution_failed"), false);
+  assert.equal(Object.hasOwn(pagedView.envelopes[0], "nativeExecutionFailure"), false);
   queue.db.prepare("UPDATE worker SET desired=0").run();
   await tick(queue, token, connect); assert.equal(sent.length, 3);
   // Bounded snapshot concurrency and workspace barrier, including one target error.

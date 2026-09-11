@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,10 +12,12 @@ import { hostOperation } from "./host-client.mjs";
 const root = mkdtempSync(join(tmpdir(), "zcode-codex-bridge-"));
 try {
   const script = join(root, "codex.js"); writeFileSync(script, "");
+  const workspace = join(root, "workspace"), cwdAlias = join(root, "cwd-alias");
+  mkdirSync(workspace); symlinkSync(workspace, cwdAlias, process.platform === "win32" ? "junction" : "dir");
   const env = {
     ZCC_CODEX_SCRIPT: script,
     ZCC_CODEX_THREAD_ID: "01a06b03-cd32-7c31-ab2d-961937a69a11",
-    ZCC_CODEX_CWD: root,
+    ZCC_CODEX_CWD: cwdAlias,
     ZCC_SOURCE_SESSION_ID: "sess_364f3d09-4b3d-4db4-811f-3624dde5a68f",
     ZCC_TEAM_ID: "zcode-codex-poc",
     ZCC_BINDING_EXPIRES_AT: "2030-01-01T00:00:00Z",
@@ -130,7 +132,7 @@ try {
   assert.equal(messages.at(-1).error.message, "Invalid params");
 
   const hostConfigPath = join(root, "host-config.json");
-  const hostConfig = { script, pipePath: "\\\\.\\pipe\\test-only", threadId: binding.threadId, cwd: root, expiresAt: binding.expiresAt };
+  const hostConfig = { script, pipePath: "\\\\.\\pipe\\test-only", threadId: binding.threadId, cwd: cwdAlias, expiresAt: binding.expiresAt };
   writeFileSync(hostConfigPath, JSON.stringify(hostConfig));
   let hostSends = 0;
   function hostTransport({ wrongTarget = false, lostAck = false, expireBeforeSend = false, idle = false, unloaded = false, requireIdle = false } = {}) {
@@ -148,7 +150,7 @@ try {
             assert.equal(values.threadId, binding.threadId);
             let result;
             if (name === "read_thread") {
-              result = { thread: { id: wrongTarget ? "other" : binding.threadId, cwd: root, status: { type: unloaded ? "notLoaded" : idle ? "idle" : "active" } }, turns: [{ private: "never expose" }] };
+              result = { thread: { id: wrongTarget ? "other" : binding.threadId, cwd: cwdAlias, status: { type: unloaded ? "notLoaded" : idle ? "idle" : "active" } }, turns: [{ private: "never expose" }] };
               if (expireBeforeSend) binding.expiresAt = "2000-01-01T00:00:00Z";
             } else {
               assert.equal(name, "send_message_to_thread"); hostSends++;

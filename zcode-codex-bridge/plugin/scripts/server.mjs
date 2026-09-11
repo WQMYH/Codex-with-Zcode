@@ -44,7 +44,10 @@ const required = (env, name) => {
   if (!value) throw Error(`Missing plugin configuration: ${name}`);
   return value;
 };
-const canonical = value => normalize(resolve(value)).toLowerCase();
+const canonical = value => {
+  const path = resolve(value);
+  return normalize(existsSync(path) ? realpathSync.native(path) : path).toLowerCase();
+};
 
 export function loadBinding(env = process.env, now = Date.now()) {
   const codexScript = required(env, "ZCC_CODEX_SCRIPT");

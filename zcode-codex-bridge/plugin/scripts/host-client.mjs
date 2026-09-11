@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const canonical = value => normalize(resolve(value)).toLowerCase();
+const canonical = value => {
+  const path = resolve(value);
+  return normalize(existsSync(path) ? realpathSync.native(path) : path).toLowerCase();
+};
 
 export function loadHostConfig(root, binding) {
   const config = JSON.parse(readFileSync(join(root, "host-config.json"), "utf8"));
