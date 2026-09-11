@@ -113,6 +113,8 @@ See the [queue guide](docs/message-queue.md) for parameters, teams, cursors, ack
 
 - **Delivery is not acceptance.** Native `completed` means a turn ended, not that its work passed review.
 - **Uncertain sends are not replayed.** Inspect the conversation before recovery; never change a request ID just to resend.
+- **Confirmed rate limits retry in the background.** The plugin waits at least 300 seconds between sends, with five retries per message (six attempts including the initial send). Replies and restarts do not reset the budget. All teams share a cooldown and stagger recovery sends; reads continue. Exhaustion emits `temporarily_blocked` in the inbox and blocks only that task's FIFO head. This does not wake an inactive Codex task.
+- **Retry budgets belong to messages, not conversations.** Successful completion ends retries while retaining the audit count. New messages have independent budgets. External input during cooldown retires the old retry without blocking later authorized messages.
 - **Read failures are isolated.** Failed batch reads get one fresh-connection check per affected task, with the original cursor and completion checks. This never retries a send.
 - **Resources are bounded.** All teams share one queue and remote connection: up to 100 unresolved messages, 500 full records, and a 20 MB database-and-journal budget.
 - **Pause is global.** It affects every team. Stopping one model turn does not cancel its queued follow-ups.

@@ -123,7 +123,7 @@ try {
       { id: `assistant-${suffix}`, role: "assistant", turnIndex: 1, content: "", contentOffset: 0 }
     ] });
     const view = queue.read({ taskId, limit: 20 });
-    assert.equal(queue.get(messageId).state, "needs_attention");
+    assert.equal(queue.get(messageId).state, suffix === "rate" ? "retry_wait" : "needs_attention");
     assert.deepEqual(view.events.find(event => event.kind === "native_execution_failed").payload, expected);
     assert.deepEqual(view.envelopes[0].nativeExecutionFailure, expected);
     if (suffix === "unknown") assert.equal(queue.resolve({ messageId, decision: "release" }).state, "released");

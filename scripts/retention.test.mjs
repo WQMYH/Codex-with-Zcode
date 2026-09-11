@@ -62,7 +62,7 @@ try {
   assert.equal(q.db.prepare("SELECT count(*) AS n FROM messages WHERE pruned_at IS NOT NULL").get().n, 0);
   q.close();
 
-  // A real schema-2 WAL database reopens as schema 4 without changing old event bodies/ids.
+  // A real schema-2 WAL database reopens as schema 5 without changing old event bodies/ids.
   const oldPath = join(dir, "old.sqlite"), old = new DatabaseSync(oldPath);
   old.exec(`PRAGMA journal_mode=WAL; PRAGMA user_version=2;
     CREATE TABLE messages(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,request_id TEXT NOT NULL,
@@ -74,7 +74,7 @@ try {
     INSERT INTO messages(id,request_id,task_id,prompt,state,created_at) VALUES('old-id','old-request','sess_old','旧正文','completed',1);
     INSERT INTO events(message_id,task_id,kind,payload,created_at) VALUES('old-id','sess_old','message','{"content":"旧回复"}',2);`);
   old.close(); q = new MessageQueue(oldPath);
-  assert.equal(q.db.prepare("PRAGMA user_version").get().user_version, 4);
+  assert.equal(q.db.prepare("PRAGMA user_version").get().user_version, 5);
   assert.equal(q.read().events[0].payload.content, "旧回复");
   assert.equal(q.get("old-id").consumed_at, null); assert(q.worker().paused);
   assert(q.enqueue({ requestId: "old-request", taskIds: ["sess_old"], prompt: "旧正文" }).deduplicated);

@@ -7,14 +7,24 @@ import { callRemoteTool, readMany, normalizeTask } from "./remote-tools.mjs";
 
 // A queued prompt is already authorized. An ended failed turn can accept a new
 // native sendText; it need not first be rewritten/reset to idle. This never
-// retries an acknowledged/uncertain message or revives a cancelled turn.
+// replays an ambiguous send. Confirmed rate limits use the bounded retry_wait policy.
 const canSend = task => task && !task.archived && ["idle", "completed", "failed"].includes(task.status);
 
 export async function dispatch(queue, row, token, connect = withRemote) {
+  row = queue.get(row.id);
+  if (!queue.ready(row)) return;
   try {
     await connect(async client => {
       const reuse = action => action(client);
-      const baseline = await callRemoteTool("zcode_remote_read", { taskId: row.task_id, messageLimit: 1, maxChars: 256 }, reuse);
+      const retrying = row.state === "retry_wait";
+      const baseline = await callRemoteTool("zcode_remote_read", { taskId: row.task_id,
+        messageLimit: retrying ? 100 : 1, maxChars: retrying ? 3000 : 256,
+        ...(retrying ? { afterCursor: row.cursor } : {}) }, reuse);
+      if (retrying) {
+        queue.observe(row, baseline);
+        row = queue.get(row.id);
+        if (baseline.hasMore || !queue.ready(row)) return;
+      }
       if (!canSend(baseline.task) || baseline.pendingPermissions || baseline.pendingQuestions || baseline.pendingCommands) return;
       // Keep the bridge opened by the baseline read. Reopening it on the same
       // connection can strand the next snapshot in the desktop runtime.
@@ -37,7 +47,7 @@ export async function tick(queue, token, connect = withRemote) {
   queue.heartbeat(token);
   const heads = queue.heads(), last = heads.findIndex(r => r.task_id === queue.worker().last_task);
   const selected = [...heads.slice(last + 1), ...heads.slice(0, last + 1)].slice(0, 8);
-  const observing = selected.filter(r => ["acknowledged", "uncertain"].includes(r.state) && r.cursor);
+  const observing = selected.filter(r => ["acknowledged", "uncertain", "retry_wait"].includes(r.state) && r.cursor);
   if (observing.length) {
     try {
       const page = await readMany({ taskIds: observing.map(r => r.task_id),
@@ -48,7 +58,7 @@ export async function tick(queue, token, connect = withRemote) {
   }
   for (const row of selected) {
     if (!queue.running(token)) break;
-    if (row.state === "queued") await dispatch(queue, row, token, connect);
+    if (["queued", "retry_wait"].includes(row.state)) await dispatch(queue, row, token, connect);
     queue.db.prepare("UPDATE worker SET last_task=?,heartbeat=? WHERE id=1 AND token=?").run(row.task_id, Date.now(), token);
   }
 }

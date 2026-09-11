@@ -79,7 +79,7 @@ try {
   old.exec("ALTER TABLE worker DROP COLUMN paused; PRAGMA user_version=0"); old.close();
   q = new MessageQueue(join(dir, "old.sqlite"));
   assert.deepEqual(q.read().events, before.events); assert.deepEqual(q.read().messages, before.messages);
-  assert(q.read().worker.paused); assert.equal(q.db.prepare("PRAGMA user_version").get().user_version, 4);
+  assert(q.read().worker.paused); assert.equal(q.db.prepare("PRAGMA user_version").get().user_version, 5);
   await startWorker(q, { launch }); assert.equal(launches, 2, "Old stopped worker stays paused after migration");
   q.close(); q = new MessageQueue(join(dir, "old.sqlite")); assert(q.worker().paused); q.close(); q = null;
   const future = new DatabaseSync(join(dir, "future.sqlite")); future.exec("PRAGMA user_version=99"); future.close();

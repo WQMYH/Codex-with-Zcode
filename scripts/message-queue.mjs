@@ -10,6 +10,7 @@ export const queuePath = () => join(dirname(configPath()), "messages.sqlite");
 export const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; } };
 const terminal = "'completed','released','cancelled'";
 export const marker = id => `[[zcode-ops:${id}]]`;
+export const RATE_RETRY = Object.freeze({ delayMs: 300_000, maxRetries: 5 });
 export const LIMITS = Object.freeze({ diskBytes: 20_000_000, databaseBytes: 9_000_000,
   workingBytes: 7_000_000, records: 500, pending: 100, requestBytes: 40_000, dedupDays: 7, readers: 16 });
 const startupMs = 30000;
@@ -59,8 +60,8 @@ export class MessageQueue {
     // Set the busy handler BEFORE the first read, including a cold concurrent open.
     this.db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
     const version = this.db.prepare("PRAGMA user_version").get().user_version;
-    if (version > 4) throw Error("Queue schema is newer than this plugin");
-    if (version < 4 && this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='worker'").get()) {
+    if (version > 5) throw Error("Queue schema is newer than this plugin");
+    if (version < 5 && this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='worker'").get()) {
       const w = this.worker();
       if (w.token && alive(w.pid)) throw Error("Stop the old queue worker before upgrading");
     }
@@ -75,7 +76,7 @@ export class MessageQueue {
       PRAGMA temp_store=MEMORY; PRAGMA secure_delete=ON; PRAGMA max_page_count=${maxPages};`);
     if (this.db.prepare("PRAGMA journal_mode").get().journal_mode !== "delete") throw Error("Cannot switch queue journal; close old clients first");
     if (version < 4) this.transaction(() => {
-    if (this.db.prepare("PRAGMA user_version").get().user_version === 4) return;
+    if (this.db.prepare("PRAGMA user_version").get().user_version >= 4) return;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS messages (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, request_id TEXT NOT NULL,
@@ -116,6 +117,16 @@ export class MessageQueue {
           UPDATE messages SET consumed_at=NULL WHERE pruned_at IS NULL;
           PRAGMA user_version=4;`);
       });
+    if (version < 5) this.transaction(() => {
+      if (this.db.prepare("PRAGMA user_version").get().user_version === 5) return;
+      const columns = new Set(this.db.prepare("PRAGMA table_info(messages)").all().map(c => c.name));
+      for (const [name, type] of Object.entries({ retry_count: "INTEGER NOT NULL DEFAULT 0", retry_at: "INTEGER" })) {
+        if (!columns.has(name)) this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${type}`);
+      }
+      if (!this.db.prepare("PRAGMA table_info(worker)").all().some(c => c.name === "rate_until"))
+        this.db.exec("ALTER TABLE worker ADD COLUMN rate_until INTEGER NOT NULL DEFAULT 0; ALTER TABLE worker ADD COLUMN rate_probe TEXT");
+      this.db.exec("PRAGMA user_version=5");
+    });
     } catch (e) { this.db.close(); throw e; }
   }
   close() { this.db.close(); }
@@ -153,6 +164,8 @@ export class MessageQueue {
       destination: { agent: "zcode", taskId: row.task_id }, createdAt: row.created_at,
       prompt: row.pruned_at ? null : row.prompt, context: row.pruned_at ? null : JSON.parse(row.context),
       state: row.state, nativeStatus: row.native_status, nativeMessageId: row.native_id, turnIndex: row.turn_index,
+      retry: { count: row.retry_count, maxRetries: RATE_RETRY.maxRetries, nextAttemptAt: row.retry_at,
+        remainingSeconds: row.state === "retry_wait" ? Math.max(0, Math.ceil((Math.max(row.retry_at, this.worker().rate_until) - Date.now()) / 1000)) : null },
       ...(failure ? { nativeExecutionFailure: JSON.parse(failure.payload) } : {}),
       consumedAt: row.consumed_at, bodyPruned: !!row.pruned_at,
       lastEvent: this.db.prepare("SELECT coalesce(max(seq),0) AS n FROM events WHERE message_id=?").get(row.id).n };
@@ -251,9 +264,21 @@ export class MessageQueue {
     });
   }
   remoteDone(token) { this.transaction(() => this.db.prepare("DELETE FROM remote_requests WHERE token=?").run(token)); }
+  ready(row, now = Date.now()) {
+    return ["queued", "retry_wait"].includes(row.state) && now >= this.worker().rate_until &&
+      (row.state !== "retry_wait" || now >= row.retry_at);
+  }
   claim(row, token, cursor) {
     return this.transaction(() => {
-      if (!this.running(token) || this.get(row.id).state !== "queued" || !this.heads().some(r => r.id === row.id)) return false;
+      row = this.get(row.id);
+      if (!this.running(token) || !this.ready(row) || !this.heads().some(r => r.id === row.id)) return false;
+      if (row.state === "retry_wait") {
+        if (row.retry_count >= RATE_RETRY.maxRetries) return false;
+        this.db.prepare("UPDATE messages SET retry_count=retry_count+1,retry_at=NULL,native_id=NULL,turn_index=NULL,reply_seen=0 WHERE id=?").run(row.id);
+        this.event(row, "rate_limit_retry_started", { attempt: row.retry_count + 1 });
+      }
+      // ponytail: queue-wide cooldown; split by account only when reliable quota identity exists.
+      if (this.worker().rate_until) this.db.prepare("UPDATE worker SET rate_until=?,rate_probe=? WHERE id=1").run(Date.now() + RATE_RETRY.delayMs, row.id);
       this.db.prepare("UPDATE messages SET cursor=? WHERE id=?").run(cursor, row.id);
       this.state(row, "dispatching"); return true;
     });
@@ -263,7 +288,8 @@ export class MessageQueue {
     this.maintain(0, incoming);
     this.transaction(() => {
       row = this.get(row.id);
-      if (!["acknowledged", "uncertain"].includes(row.state)) return;
+      if (!["acknowledged", "uncertain", "retry_wait"].includes(row.state)) return;
+      const retrying = row.state === "retry_wait";
       if (this.usedBytes() + incoming > LIMITS.workingBytes) {
         this.db.exec("UPDATE worker SET desired=0,paused=1,control_revision=control_revision+1,error='storage_capacity_reached' WHERE id=1");
         return; // Keep the old cursor: no lost result, no completion, no resend.
@@ -282,14 +308,47 @@ export class MessageQueue {
       if (row.native_status !== page.task.status) this.event(row, "native_status", { status: page.task.status });
       this.db.prepare("UPDATE messages SET cursor=?,native_id=?,turn_index=?,reply_seen=?,native_status=? WHERE id=?")
         .run(page.cursor, nativeId, turn, reply, page.task.status, row.id);
+      if (retrying && competing) {
+        this.db.prepare("UPDATE messages SET retry_at=NULL WHERE id=?").run(row.id);
+        this.state(row, "released");
+        this.event(row, "retry_stopped", { reason: "superseded_by_external_input", businessAccepted: false });
+        return;
+      }
+      // Re-reading the same failed attempt must not restart its timer or spend a retry.
+      if (retrying && !page.task.archived && !page.observedLatestTask && page.task.status === "failed" &&
+          page.task.nativeExecutionFailure?.reason === "rate_limited") return;
+      if (retrying) {
+        this.db.prepare("UPDATE messages SET retry_at=NULL WHERE id=?").run(row.id);
+        this.state(row, "acknowledged"); // Resume reply collection, not sending, when the native turn resumes.
+      }
       if (!page.hasMore && !competing && nativeId && page.task.status === "failed") this.event(row, "native_execution_failed", {
         ...(page.task.nativeExecutionFailure ?? { stage: "native_execution", source: "zcode_native", reason: "unknown" }),
         userMessageObserved: true, assistantTextReturned: !!reply
       });
+      if (!page.hasMore && !competing && nativeId && !page.task.archived && !page.observedLatestTask &&
+          page.task.status === "failed" && page.task.nativeExecutionFailure?.reason === "rate_limited") {
+        const retryAt = Date.now() + RATE_RETRY.delayMs;
+        this.db.prepare("UPDATE worker SET rate_until=max(rate_until,?),rate_probe=NULL WHERE id=1").run(retryAt);
+        if (row.retry_count < RATE_RETRY.maxRetries) {
+          this.db.prepare("UPDATE messages SET retry_at=? WHERE id=?").run(retryAt, row.id);
+          this.state(row, "retry_wait");
+          this.event(row, "rate_limit_retry_scheduled", { attempt: row.retry_count + 1, nextAttemptAt: retryAt });
+        } else {
+          this.state(row, "needs_attention");
+          this.event(row, "temporarily_blocked", { reason: "rate_limit_retries_exhausted", retries: row.retry_count,
+            message: "本任务暂时堵塞：已重试 5 次，仍受限流影响。" });
+        }
+        return;
+      }
       if (competing || page.task.archived || ["cancelled", "interrupted"].includes(page.task.status) ||
           !page.hasMore && page.task.status === "failed") this.state(row, "needs_attention");
       else if (page.completionConfirmed === true && !page.hasMore && nativeId && reply && page.task.status === "completed" &&
-        !page.pendingPermissions && !page.pendingQuestions && !page.pendingCommands) this.state(row, "completed");
+        !page.pendingPermissions && !page.pendingQuestions && !page.pendingCommands) {
+        this.state(row, "completed");
+        const probe = this.worker().rate_probe;
+        if (probe && this.get(probe)?.state === "completed" && !this.db.prepare("SELECT 1 FROM messages WHERE state='retry_wait' OR (retry_count>0 AND state IN ('dispatching','acknowledged','uncertain')) LIMIT 1").get())
+          this.db.exec("UPDATE worker SET rate_until=0,rate_probe=NULL WHERE id=1");
+      }
     });
   }
   resolve({ messageId, decision }) {
@@ -297,8 +356,9 @@ export class MessageQueue {
       const row = this.get(messageId);
       if (!row) throw Error("Unknown messageId");
       if (decision === "cancel" && row.state !== "queued") throw Error("Only unsent queued messages can be cancelled; this does not stop ZCode");
-      if (decision === "release" && !["uncertain", "needs_attention", "acknowledged"].includes(row.state)) throw Error("Only an observed or uncertain delivery can be manually released");
+      if (decision === "release" && !["uncertain", "needs_attention", "acknowledged", "retry_wait"].includes(row.state)) throw Error("Only an observed or uncertain delivery can be manually released");
       this.state(row, decision === "cancel" ? "cancelled" : "released");
+      this.db.prepare("UPDATE messages SET retry_at=NULL WHERE id=?").run(row.id);
       return { messageId, state: this.get(messageId).state, remoteStopped: false };
     });
   }
@@ -350,7 +410,8 @@ export class MessageQueue {
       storage: { diskBytes: diskSize(this.path), maxDiskBytes: LIMITS.diskBytes, databaseLimitBytes: LIMITS.databaseBytes,
         maxRecords: LIMITS.records, fullRecords: this.db.prepare("SELECT count(*) AS n FROM messages WHERE pruned_at IS NULL").get().n },
       worker: { requested: !!w.desired, paused: !!w.paused, running: !!w.token && alive(w.pid), starting: !!startupLive(w),
-        controlRevision: w.control_revision, heartbeat: w.heartbeat, error: w.error } };
+        controlRevision: w.control_revision, heartbeat: w.heartbeat, error: w.error,
+        rateLimit: { scope: "queue", nextSendAt: w.rate_until || null, recoverySpacingMs: RATE_RETRY.delayMs } } };
     });
   }
 }
