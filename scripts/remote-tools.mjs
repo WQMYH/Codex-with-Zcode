@@ -140,16 +140,18 @@ async function readTaskPage(client, task, args) {
     // Inventory used to locate the workspace is not a current completion signal.
     const fresh = (await client.list()).tasks.find(t => t.taskId === task.taskId && t.workspacePath === task.workspacePath);
     if (!fresh) throw Error("Task disappeared or moved while reading");
-    return { task: normalizeTask(fresh), ...messagePage(snapshot, fresh, args) };
+    return { snapshot, fresh, page: { task: normalizeTask(fresh), ...messagePage(snapshot, fresh, args) } };
   };
-  const page = await read();
+  const { page } = await read();
   if (page.task.status !== "completed" || page.task.archived || page.hasMore) return { ...page, completionConfirmed: false };
   // Confirm the final tail after observing completion; a partial snapshot followed by
   // a terminal list response must not release the next queued message.
-  const confirmed = await read();
+  const latest = await read(), confirmed = latest.page;
   const failedWithoutReply = initialTask.status === "failed" && confirmed.task.status === "completed" && !confirmed.assistantTextReturned;
-  return { ...confirmed, ...(failedWithoutReply ? { task: initialTask, observedLatestTask: confirmed.task } : {}),
-    completionConfirmed: !failedWithoutReply && confirmed.task.status === "completed" && !confirmed.task.archived &&
+  if (failedWithoutReply) return { ...confirmed,
+    ...messagePage(latest.snapshot, { ...latest.fresh, displayStatus: task.displayStatus, archived: task.archived }, args),
+    task: initialTask, observedLatestTask: confirmed.task, completionConfirmed: false };
+  return { ...confirmed, completionConfirmed: confirmed.task.status === "completed" && !confirmed.task.archived &&
     !confirmed.hasMore && !confirmed.historyGap && !confirmed.pendingPermissions && !confirmed.pendingQuestions && !confirmed.pendingCommands &&
     page.tailCursor === confirmed.tailCursor && page.snapshotMessageCount === confirmed.snapshotMessageCount &&
     page.task.updatedAt === confirmed.task.updatedAt };

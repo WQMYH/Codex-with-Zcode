@@ -7,6 +7,7 @@ import { RemoteClient, validateRemoteUrl } from "./remote-client.mjs";
 import { normalizeTask, callRemoteTool, waitForTask, waitForMessages, readMany, waitForMany } from "./remote-tools.mjs";
 import { messagePage } from "./remote-messages.mjs";
 import { callConfigTool, readConfig, validateConfig, writeConfig } from "./config.mjs";
+import { callPublicTool } from "./tools.mjs";
 
 const bridge = { bridgeSessionId: "test", bridgeGeneration: 1, initialTaskId: "sess_test", workspacePath: "test-workspace" };
 assert.equal(checksum(Buffer.from("123456789")), "cbf43926");
@@ -181,6 +182,33 @@ assert.equal(inconsistent.task.status, "failed");
 assert.equal(inconsistent.observedLatestTask.status, "completed");
 assert.equal(inconsistent.assistantTextReturned, false);
 assert.equal(inconsistent.completionConfirmed, false);
+const conflictStatuses = ["error", "completed", "completed", "completed", "completed", "completed"];
+function sequencedRead(statuses) {
+  const state = { statuses, lists: 0 };
+  return { state, connect: action => action({
+    list: async () => ({ tasks: [{ ...task, displayStatus: state.statuses[Math.min(state.lists++, state.statuses.length - 1)] }] }),
+    open: async () => {}, snapshot: async () => ({ messages: [] })
+  }) };
+}
+const publicSequence = sequencedRead(["completed", "completed", "completed"]);
+const publicRemote = (name, args) => callRemoteTool(name, args, publicSequence.connect);
+const publicBaseline = await callPublicTool("zcode_read", { view: "conversation", taskIds: [task.taskId] }, { remote: publicRemote });
+publicSequence.state.statuses = conflictStatuses; publicSequence.state.lists = 0;
+const publicConflict = await callPublicTool("zcode_read", { view: "conversation", taskIds: [task.taskId],
+  cursor: publicBaseline.cursor, waitMs: 100 }, { remote: publicRemote });
+assert.equal(publicSequence.state.lists, 3);
+assert.equal(publicConflict.tasks[0].task.status, "failed");
+assert.equal(publicConflict.tasks[0].completionConfirmed, false);
+assert.equal(publicConflict.changed, true); assert.equal(publicConflict.reason, "changed");
+const remoteSequence = sequencedRead(["completed", "completed", "completed"]);
+const remoteBaseline = await callRemoteTool("zcode_remote_read", { taskId: task.taskId }, remoteSequence.connect);
+remoteSequence.state.statuses = conflictStatuses; remoteSequence.state.lists = 0;
+const remoteConflict = await callRemoteTool("zcode_remote_wait", { taskId: task.taskId, mode: "messages",
+  afterCursor: remoteBaseline.cursor, timeoutMs: 100 }, remoteSequence.connect);
+assert.equal(remoteSequence.state.lists, 3);
+assert.equal(remoteConflict.task.status, "failed");
+assert.equal(remoteConflict.completionConfirmed, false);
+assert.equal(remoteConflict.changed, true); assert.equal(remoteConflict.reason, "state_changed");
 
 // Batch reads use one bridge and run same-workspace snapshots concurrently.
 const batchTask = { taskId: "sess_batch", workspaceKind: "local", workspacePath: "test-workspace", displayStatus: "running" };
