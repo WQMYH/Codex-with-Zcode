@@ -23,6 +23,8 @@ assert.throws(() => new FrameReader().accept({ ...frames(encode("x"), bridge, 2)
 assert.throws(() => validateRemoteUrl("https://example.com/remote/v4?sid=x&hash=x&mid=x"));
 assert.throws(() => validateRemoteUrl("https://zcode.z.ai/remote/v4?sid=x&sid=y&hash=x&mid=x"));
 assert.equal(normalizeTask({ displayStatus: "error" }).status, "failed");
+assert.deepEqual(normalizeTask({ displayStatus: "error", lastError: "DEVICE_OFFLINE" }).nativeExecutionFailure,
+  { stage: "native_execution", source: "zcode_native", reason: "device_offline", code: "DEVICE_OFFLINE" });
 assert.equal(normalizeTask({ displayStatus: "__proto__" }).status, "unknown");
 assert.equal(normalizeTask({ updatedAt: 1 }).status, "unknown", "Stale time must never infer interruption");
 
@@ -168,6 +170,17 @@ assert.equal(sends, 1, "Never retry a send automatically");
 await assert.rejects(callRemoteTool("zcode_remote_tasks", { includeArchived: "false" }, connect), /Invalid/);
 const read = await callRemoteTool("zcode_remote_read", { taskId: "sess_test" }, connect);
 assert.equal(read.messages[0].content, "你好");
+let inconsistentLists = 0;
+const inconsistentStatuses = ["error", "completed", "completed"];
+const inconsistent = await callRemoteTool("zcode_remote_read", { taskId: task.taskId }, action => action({
+  list: async () => ({ tasks: [{ ...task, displayStatus: inconsistentStatuses[inconsistentLists++] }] }),
+  open: async () => {}, snapshot: async () => ({ messages: [] })
+}));
+assert.equal(inconsistentLists, 3);
+assert.equal(inconsistent.task.status, "failed");
+assert.equal(inconsistent.observedLatestTask.status, "completed");
+assert.equal(inconsistent.assistantTextReturned, false);
+assert.equal(inconsistent.completionConfirmed, false);
 
 // Batch reads use one bridge and run same-workspace snapshots concurrently.
 const batchTask = { taskId: "sess_batch", workspaceKind: "local", workspacePath: "test-workspace", displayStatus: "running" };
@@ -184,6 +197,11 @@ const batchConnect = action => action({
 });
 const batched = await readMany({ taskIds: [batchTask.taskId, batchOther.taskId], maxChars: 1000 }, batchConnect);
 assert.equal(batched.tasks.length, 2); assert.equal(batchOpens, 1); assert.equal(batchPeak, 2);
+const deviceOffline = await readMany({ taskIds: [batchTask.taskId] }, action => action({
+  list: async () => ({ tasks: [batchTask] }), open: async () => {}, snapshot: async () => { throw Error("DEVICE_OFFLINE"); }
+}));
+assert.deepEqual(deviceOffline.errors, [{ taskId: batchTask.taskId, error: "device_offline", code: "DEVICE_OFFLINE" }]);
+assert.equal(deviceOffline.tasks.length, 0);
 const batchCursors = Object.fromEntries(batched.tasks.map(row => [row.task.taskId, row.cursor]));
 const batchWait = await waitForMany({ taskIds: [batchTask.taskId, batchOther.taskId], afterCursors: batchCursors, timeoutMs: 0 }, batchConnect);
 assert.equal(batchWait.reason, "timeout"); assert.equal(batchWait.changed, false);

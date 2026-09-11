@@ -39,25 +39,34 @@ export const remoteTools = [
 }));
 
 function nativeExecutionFailure(error) {
-  if (!error || typeof error !== "object" || Array.isArray(error)) return { stage: "native_execution", source: "zcode_native", reason: "unknown" };
-  const attribution = error.attribution && typeof error.attribution === "object" && !Array.isArray(error.attribution) ? error.attribution : {};
   const scalar = value => {
     const result = typeof value === "string" ? value.trim() : Number.isSafeInteger(value) ? String(value) : "";
     return result && result.length <= 128 ? result : null;
   };
+  const object = error && typeof error === "object" && !Array.isArray(error) ? error : {};
+  const attribution = object.attribution && typeof object.attribution === "object" && !Array.isArray(object.attribution) ? object.attribution : {};
   const integer = value => Number.isInteger(value) && value >= 100 && value <= 599 ? value : null;
-  const outerCode = scalar(error.code), providerCode = scalar(attribution.providerErrorCode);
-  const outerReason = scalar(error.reason), providerReason = scalar(attribution.reason);
-  const outerStatus = integer(error.statusCode), providerStatus = integer(attribution.statusCode);
+  const outerCode = scalar(typeof error === "string" ? error : object.code), providerCode = scalar(attribution.providerErrorCode);
+  const outerReason = scalar(object.reason), providerReason = scalar(attribution.reason);
+  const outerStatus = integer(object.statusCode), providerStatus = integer(attribution.statusCode);
   const rateLimited = [outerCode, providerCode].includes("1308") || [outerReason, providerReason].includes("rate_limited") || [outerStatus, providerStatus].includes(429);
-  if (!rateLimited) return { stage: "native_execution", source: "zcode_native", reason: "unknown" };
-  const code = providerCode ?? outerCode, statusCode = providerStatus ?? outerStatus;
-  const retryable = typeof attribution.retryable === "boolean" ? attribution.retryable : typeof error.retryable === "boolean" ? error.retryable : null;
-  const providerId = scalar(attribution.providerId) ?? scalar(error.providerId), modelId = scalar(attribution.modelId) ?? scalar(error.modelId);
-  return { stage: "native_execution", source: "provider", reason: "rate_limited", ...(code ? { code } : {}),
-    ...(statusCode ? { statusCode } : {}), ...(retryable !== null ? { retryable } : {}),
-    ...(providerId ? { providerId } : {}), ...(modelId ? { modelId } : {}) };
+  if (rateLimited) {
+    const code = providerCode ?? outerCode, statusCode = providerStatus ?? outerStatus;
+    const retryable = typeof attribution.retryable === "boolean" ? attribution.retryable : typeof object.retryable === "boolean" ? object.retryable : null;
+    const providerId = scalar(attribution.providerId) ?? scalar(object.providerId), modelId = scalar(attribution.modelId) ?? scalar(object.modelId);
+    return { stage: "native_execution", source: "provider", reason: "rate_limited", ...(code ? { code } : {}),
+      ...(statusCode ? { statusCode } : {}), ...(retryable !== null ? { retryable } : {}),
+      ...(providerId ? { providerId } : {}), ...(modelId ? { modelId } : {}) };
+  }
+  if ([outerCode, providerCode].includes("DEVICE_OFFLINE") || [outerReason, providerReason].includes("device_offline")) {
+    return { stage: "native_execution", source: "zcode_native", reason: "device_offline", code: "DEVICE_OFFLINE" };
+  }
+  return { stage: "native_execution", source: "zcode_native", reason: "unknown" };
 }
+
+const readFailure = (error, fallback = "snapshot_or_cursor_unavailable") =>
+  /\bDEVICE_OFFLINE\b/.test(String(error?.code ?? error?.message ?? error))
+    ? { error: "device_offline", code: "DEVICE_OFFLINE" } : { error: fallback };
 
 export function normalizeTask(t) {
   const rawStatus = t.displayStatus ?? null;
@@ -125,6 +134,7 @@ async function openWorkspace(client, task, tasks) {
 }
 
 async function readTaskPage(client, task, args) {
+  const initialTask = normalizeTask(task);
   const read = async () => {
     const snapshot = await client.snapshot(task.taskId, args.messageLimit ?? 100);
     // Inventory used to locate the workspace is not a current completion signal.
@@ -137,7 +147,9 @@ async function readTaskPage(client, task, args) {
   // Confirm the final tail after observing completion; a partial snapshot followed by
   // a terminal list response must not release the next queued message.
   const confirmed = await read();
-  return { ...confirmed, completionConfirmed: confirmed.task.status === "completed" && !confirmed.task.archived &&
+  const failedWithoutReply = initialTask.status === "failed" && confirmed.task.status === "completed" && !confirmed.assistantTextReturned;
+  return { ...confirmed, ...(failedWithoutReply ? { task: initialTask, observedLatestTask: confirmed.task } : {}),
+    completionConfirmed: !failedWithoutReply && confirmed.task.status === "completed" && !confirmed.task.archived &&
     !confirmed.hasMore && !confirmed.historyGap && !confirmed.pendingPermissions && !confirmed.pendingQuestions && !confirmed.pendingCommands &&
     page.tailCursor === confirmed.tailCursor && page.snapshotMessageCount === confirmed.snapshotMessageCount &&
     page.task.updatedAt === confirmed.task.updatedAt };
@@ -246,13 +258,13 @@ export async function readMany(args, connect = withRemote) {
   const results = [], errors = [], isolatedReads = [];
   async function readGroup(client, group) {
     try { await openWorkspace(client, group[0], list.tasks); }
-    catch { errors.push(...group.map(task => ({ taskId: task.taskId, error: "workspace_unavailable" }))); return; }
+    catch (error) { errors.push(...group.map(task => ({ taskId: task.taskId, ...readFailure(error, "workspace_unavailable") }))); return; }
     const pages = await parallelLimit(group, BATCH_CONCURRENCY, async task => {
       try {
         return await readTaskPage(client, task, { ...args, afterCursor: cursors[task.taskId], maxChars: args.maxChars ?? 3000 });
-      } catch {
+      } catch (error) {
         if (group.length > 1) isolatedReads.push(task);
-        else errors.push({ taskId: task.taskId, error: "snapshot_or_cursor_unavailable" });
+        else errors.push({ taskId: task.taskId, ...readFailure(error) });
         return null;
       }
     });
@@ -278,7 +290,7 @@ export async function readMany(args, connect = withRemote) {
   while (groups.length || isolatedReads.length) {
     const group = groups.shift() ?? [isolatedReads.shift()];
     try { await connect(client => readGroup(client, group)); }
-    catch { errors.push(...group.map(task => ({ taskId: task.taskId, error: "connection_unavailable" }))); }
+    catch (error) { errors.push(...group.map(task => ({ taskId: task.taskId, ...readFailure(error, "connection_unavailable") }))); }
   }
   return { source: "zcode_desktop_remote", queriedAt: new Date().toISOString(),
     requested: args.taskIds.length, missing, errors, tasks: results,
